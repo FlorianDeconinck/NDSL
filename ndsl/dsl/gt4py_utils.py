@@ -20,23 +20,6 @@ managed_memory = True
 # Number of halo lines for each field and default origin
 origin = (N_HALO_DEFAULT, N_HALO_DEFAULT, 0)
 
-# TODO: Both pyFV3 and pySHiELD need to know what is being advected
-#       but the actual value should come from outside of `ndsl`.
-#       There should be a set of API to deal with tracers, that lives in `ndsl`
-#       but their call doesn't.
-# TODO get from field_table
-tracer_variables = [
-    "qvapor",
-    "qliquid",
-    "qrain",
-    "qice",
-    "qsnow",
-    "qgraupel",
-    "qo3mr",
-    "qsgs_tke",
-    "qcld",
-]
-
 
 def mark_untested(msg="This is not tested"):
     def inner(func) -> Callable[..., Any]:
@@ -140,9 +123,7 @@ def make_storage_data(
                     default_mask = (True, True, False)
                     shape = (1, shape[axis])
                 else:
-                    default_mask = tuple(
-                        [i == axis for i in range(max_dim)]
-                    )  # type: ignore
+                    default_mask = tuple([i == axis for i in range(max_dim)])  # type: ignore
             elif dummy or axis != 2:
                 default_mask = (True, True, True)
             else:
@@ -318,36 +299,6 @@ def make_storage_from_shape(
         dimensions=_mask_to_dimensions(mask, shape),
     )
     return storage
-
-
-def make_storage_dict(
-    data: Field,
-    shape: Optional[Tuple[int, ...]] = None,
-    origin: Tuple[int, ...] = origin,
-    start: Tuple[int, ...] = (0, 0, 0),
-    dummy: Optional[Tuple[int, ...]] = None,
-    names: Optional[List[str]] = None,
-    axis: int = 2,
-    *,
-    backend: str,
-    dtype: DTypes = Float,
-) -> Dict[str, "Field"]:
-    assert names is not None, "for 4d variable storages, specify a list of names"
-    if shape is None:
-        shape = data.shape
-    data_dict: Dict[str, Field] = dict()
-    for i in range(data.shape[3]):
-        data_dict[names[i]] = make_storage_data(
-            squeeze(data[:, :, :, i]),
-            shape,
-            origin=origin,
-            start=start,
-            dummy=dummy,
-            axis=axis,
-            backend=backend,
-            dtype=dtype,
-        )
-    return data_dict
 
 
 def storage_dict(st_dict, names, shape, origin, *, backend: str):
