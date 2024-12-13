@@ -109,6 +109,12 @@ class QuantityFactory:
             dtype=data.dtype,
             allow_mismatch_float_precision=allow_mismatch_float_precision,
         )
+        if data.shape != base.data.shape:
+            raise ValueError(
+                "[NDSL] QuantityFactor.from_array require"
+                " input data to match grid size, e.g."
+                f" input.shape {data.shape} != {base.data.shape}"
+            )
         base.data[:] = base.np.asarray(data)
         return base
 
