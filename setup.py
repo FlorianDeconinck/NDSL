@@ -26,10 +26,10 @@ requirements: List[str] = [
     local_pkg("dace", "external/dace"),
     "mpi4py==3.1.5",
     "cftime",
-    "xarray",
+    "xarray>=2025.01.2",  # datatree + fixes
     "f90nml>=1.1.0",
     "fsspec",
-    "netcdf4==1.7.0",
+    "netcdf4==1.7.1",
     "scipy",  # restart capacities only
     "h5netcdf",  # for xarray
     "dask",  # for xarray
@@ -57,7 +57,7 @@ setup(
     packages=find_namespace_packages(include=["ndsl", "ndsl.*"]),
     include_package_data=True,
     url="https://github.com/NOAA-GFDL/NDSL",
-    version="2024.09.00",
+    version="2025.01.00",
     zip_safe=False,
     entry_points={
         "console_scripts": [
