@@ -357,6 +357,7 @@ class TranslateGrid:
             shape=buffer.shape,
             backend=self.backend,
             mask=mask,
+            dtype=self.data[varname].dtype,
         )
 
     def _make_composite_vvar_storage(self, varname, data3d, shape):
@@ -370,6 +371,7 @@ class TranslateGrid:
             shape=buffer.shape,
             origin=(1, 1, 0),
             backend=self.backend,
+            dtype=self.data[varname].dtype,
         )
 
     def make_grid_storage(self, pygrid):
@@ -391,6 +393,7 @@ class TranslateGrid:
                     (shape[0], shape[1], 3),
                     origin=(0, 0, 0),
                     backend=self.backend,
+                    dtype=self.data[key].dtype,
                 )
         for key, axis in TranslateGrid.edge_var_axis.items():
             if key in self.data:
@@ -401,6 +404,7 @@ class TranslateGrid:
                     axis=axis,
                     read_only=True,
                     backend=self.backend,
+                    dtype=self.data[key].dtype,
                 )
         for key, axis in TranslateGrid.edge_vect_axis.items():
             if key in self.data:
@@ -424,6 +428,7 @@ class TranslateGrid:
                     start=origin,
                     read_only=True,
                     backend=self.backend,
+                    dtype=value.dtype,
                 )
 
     def python_grid(self):

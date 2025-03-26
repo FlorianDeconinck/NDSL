@@ -6,7 +6,6 @@ import numpy as np
 from ndsl.comm.partitioner import TilePartitioner
 from ndsl.constants import N_HALO_DEFAULT, X_DIM, Y_DIM, Z_DIM
 from ndsl.dsl.stencil import GridIndexing
-from ndsl.dsl.typing import Float
 from ndsl.grid.generation import GridDefinitions
 from ndsl.grid.helper import (
     AngleGridData,
@@ -500,7 +499,12 @@ class Grid:
             data = getattr(self, name)
             assert data is not None
 
-            quantity = self.quantity_factory.zeros(dims=dims, units=units, dtype=Float)
+            quantity = self.quantity_factory.zeros(
+                dims=dims,
+                units=units,
+                dtype=data.dtype,
+                allow_mismatch_float_precision=True,
+            )
             if len(quantity.shape) == 3:
                 quantity.data[:] = data[:, :, : quantity.shape[2]]
             elif len(quantity.shape) == 2:
@@ -544,6 +548,7 @@ class Grid:
                 data=self.area_64,
                 dims=GridDefinitions.area.dims,
                 units=GridDefinitions.area.units,
+                allow_mismatch_float_precision=True,
             ),
             rarea=self.quantity_factory.from_array(
                 data=self.rarea,
@@ -805,6 +810,8 @@ class Grid:
             vertical_data=vertical,
             contravariant_data=contravariant,
             angle_data=angle,
+            fc=self.fC,
+            fc_agrid=self.f0,
         )
         return self._grid_data
 
