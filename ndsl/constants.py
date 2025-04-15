@@ -102,7 +102,6 @@ if CONST_VERSION == ConstantVersions.GEOS:
     TFREEZE = Float(273.16)
     """Freezing temperature of fresh water [K]"""
     SAT_ADJUST_THRESHOLD = Float(1.0e-6)
-    DZ_MIN = Float(6.0)
 elif CONST_VERSION == ConstantVersions.UFS:
     RADIUS = Float(6.3712e6)
     """Radius of the Earth [m]"""
@@ -127,7 +126,6 @@ elif CONST_VERSION == ConstantVersions.UFS:
     TFREEZE = Float(273.15)
     """Freezing temperature of fresh water [K]"""
     SAT_ADJUST_THRESHOLD = Float(1.0e-8)
-    DZ_MIN = Float(2.0)
 elif CONST_VERSION == ConstantVersions.GFDL:
     RADIUS = Float(6371.0e3)
     """Radius of the Earth [m] #6371.0e3"""
@@ -153,7 +151,6 @@ elif CONST_VERSION == ConstantVersions.GFDL:
     TFREEZE = Float(273.16)
     """Freezing temperature of fresh water [K]"""
     SAT_ADJUST_THRESHOLD = Float(1.0e-8)
-    DZ_MIN = Float(2.0)
 else:
     raise RuntimeError("Constant selector failed, bad code.")
 

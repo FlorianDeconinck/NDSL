@@ -127,6 +127,7 @@ class NamelistDefaults:
     rlmx = 300.0  # upper-limiter on asymtotic mixing length in satmedmfdiff
     do_dk_hb19 = False  # flag for using hb19 background diff formula in satmedmfdiff
     cap_k0_land = False  # flag for applying limiter on background diff in inversion layer over land in satmedmfdiff
+    dz_min = 2.0  # Controls minimum thickness in NH solver
 
     @classmethod
     def as_dict(cls):
@@ -157,6 +158,7 @@ class Namelist:
         consequences of these inconsistencies, or more closely
         parallel the Fortran structure
     """
+
     dycore_only: bool = DEFAULT_BOOL
     # fdiag: float
     # knob_ugwp_azdir: Tuple[int, int, int, int]
@@ -492,6 +494,7 @@ class Namelist:
     n_sponge: int = NamelistDefaults.n_sponge
     daily_mean: bool = False
     """Flag to replace cosz with daily mean value in physics"""
+    dz_min: float = NamelistDefaults.dz_min
 
     @classmethod
     def from_f90nml(cls, namelist: f90nml.Namelist):
