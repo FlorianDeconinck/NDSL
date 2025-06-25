@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import abc
 from dataclasses import dataclass
 from enum import Enum
@@ -225,9 +227,12 @@ class HaloDataTransformer(abc.ABC):
         self.synchronize()
 
         # Push the buffers back in the cache
-        Buffer.push_to_cache(self._pack_buffer)
+        if self._pack_buffer is not None:
+            Buffer.push_to_cache(self._pack_buffer)
         self._pack_buffer = None
-        Buffer.push_to_cache(self._unpack_buffer)
+
+        if self._unpack_buffer is not None:
+            Buffer.push_to_cache(self._unpack_buffer)
         self._unpack_buffer = None
 
     @staticmethod
@@ -235,7 +240,7 @@ class HaloDataTransformer(abc.ABC):
         np_module: NumpyModule,
         exchange_descriptors_x: Sequence[HaloExchangeSpec],
         exchange_descriptors_y: Optional[Sequence[HaloExchangeSpec]] = None,
-    ) -> "HaloDataTransformer":
+    ) -> HaloDataTransformer:
         """Construct a module from a numpy-like module.
 
         Args:

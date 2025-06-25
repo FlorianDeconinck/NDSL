@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import dataclasses
 import functools
 import warnings
-from typing import Optional, Tuple
+from pathlib import Path
 
 import numpy as np
 
@@ -94,7 +96,7 @@ def quantity_cast_to_model_float(
 
 @dataclasses.dataclass
 class GridDefinition:
-    dims: Tuple[str, ...]
+    dims: tuple[str, ...]
     units: str
 
 
@@ -238,9 +240,9 @@ class MetricTerms:
         dy_const: float = 1000.0,
         deglat: float = 15.0,
         extdgrid: bool = False,
-        eta_file: Optional[str] = None,
-        ak: Optional[np.ndarray] = None,
-        bk: Optional[np.ndarray] = None,
+        eta_file: str | Path | None = None,
+        ak: np.ndarray | None = None,
+        bk: np.ndarray | None = None,
     ):
         self._grid_type = grid_type
         self._dx_const = dx_const
@@ -276,7 +278,7 @@ class MetricTerms:
         # This will carry the public version of the grid
         # for the selected floating point precision
         self._grid = None
-        npx, npy, ndims = self._tile_partitioner.global_extent(self._grid_64)
+        npx, npy, _ = self._tile_partitioner.global_extent(self._grid_64)
         self._npx = npx
         self._npy = npy
         self._npz = self.quantity_factory.sizer.get_extent(Z_DIM)[0]
@@ -296,15 +298,21 @@ class MetricTerms:
         self._dy_agrid = None
         self._dx_center = None
         self._dy_center = None
-        self._area = None
+        self._area: Quantity | None = None
+        self._area64: Quantity | None = None
         self._area_c = None
         if eta_file is not None or ak is not None or bk is not None:
+            if type(eta_file) is str:
+                # Temporary cast. Tob be removed once
+                eta_file = Path(eta_file)
             (
                 self._ks,
                 self._ptop,
                 self._ak,
                 self._bk,
-            ) = self._set_hybrid_pressure_coefficients(eta_file, ak, bk)
+            ) = self._set_hybrid_pressure_coefficients(
+                eta_file, ak, bk  # type: ignore
+            )
         else:
             self._ks = self.quantity_factory.zeros(
                 [],
@@ -463,8 +471,8 @@ class MetricTerms:
         quantity_factory,
         communicator,
         grid_type,
-        eta_file: str = "None",
-    ) -> "MetricTerms":
+        eta_file: Path | None = None,
+    ) -> MetricTerms:
         """
         Generates a metric terms object, using input from data contained in an
         externally generated tile file
@@ -497,8 +505,8 @@ class MetricTerms:
         dx_const: float = 1000.0,
         dy_const: float = 1000.0,
         deglat: float = 15.0,
-        eta_file: str = "None",
-    ) -> "MetricTerms":
+        eta_file: Path | None = None,
+    ) -> MetricTerms:
         sizer = SubtileGridSizer.from_tile_params(
             nx_tile=npx - 1,
             ny_tile=npy - 1,
@@ -1490,8 +1498,17 @@ class MetricTerms:
         the area of each a-grid cell
         """
         if self._area is None:
-            self._area = self._compute_area()
+            self._area, self._area64 = self._compute_area()
         return self._area
+
+    @property
+    def area64(self) -> Quantity:
+        """
+        the area of each a-grid cell, at 64-bit precision
+        """
+        if self._area64 is None:
+            self._area, self._area64 = self._compute_area()
+        return self._area64
 
     @property
     def area_c(self) -> Quantity:
@@ -2089,7 +2106,7 @@ class MetricTerms:
 
         return dx_center, dy_center
 
-    def _compute_area_cube_sphere(self):
+    def _compute_area_cube_sphere(self) -> tuple[Quantity, Quantity]:
         area_64 = self.quantity_factory.zeros(
             [X_DIM, Y_DIM],
             "m^2",
@@ -2106,9 +2123,9 @@ class MetricTerms:
         )
         self._comm.halo_update(area_64, n_points=self._halo)
 
-        return quantity_cast_to_model_float(self.quantity_factory, area_64)
+        return quantity_cast_to_model_float(self.quantity_factory, area_64), area_64
 
-    def _compute_area_cartesian(self):
+    def _compute_area_cartesian(self) -> tuple[Quantity, Quantity]:
         area_64 = self.quantity_factory.zeros(
             [X_DIM, Y_DIM],
             "m^2",
@@ -2116,7 +2133,7 @@ class MetricTerms:
             allow_mismatch_float_precision=True,
         )
         area_64.data[:, :] = self._dx_const * self._dy_const
-        return quantity_cast_to_model_float(self.quantity_factory, area_64)
+        return quantity_cast_to_model_float(self.quantity_factory, area_64), area_64
 
     def _compute_area_c_cube_sphere(self):
         area_cgrid_64 = self.quantity_factory.zeros(
@@ -2174,9 +2191,9 @@ class MetricTerms:
 
     def _set_hybrid_pressure_coefficients(
         self,
-        eta_file,
-        ak_data: Optional[np.ndarray] = None,
-        bk_data: Optional[np.ndarray] = None,
+        eta_file: Path | None = None,
+        ak_data: np.ndarray | None = None,
+        bk_data: np.ndarray | None = None,
     ):
         ks = self.quantity_factory.zeros(
             [],
