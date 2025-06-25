@@ -28,7 +28,6 @@ from ndsl.dsl.dace.sdfg_debug_passes import (
     negative_qtracers_checker,
     sdfg_nan_checker,
 )
-from ndsl.dsl.dace.sdfg_opt_passes import splittable_region_expansion
 from ndsl.dsl.dace.utils import (
     DaCeProgress,
     memory_static_analysis,
@@ -109,6 +108,7 @@ def _simplify(
         validate=validate,
         validate_all=validate_all,
         verbose=verbose,
+        skip=["ScalarToSymbolPromotion"],
     ).apply_pass(sdfg, {})
 
 
@@ -121,12 +121,17 @@ def _build_sdfg(
     if is_compiling:
         # Make the transients array persistents
         if config.is_gpu_backend():
+            # TODO
+            # The following should happen on the stree level
             _to_gpu(sdfg)
+
             make_transients_persistent(sdfg=sdfg, device=DaceDeviceType.GPU)
 
             # Upload args to device
             _upload_to_device(list(args) + list(kwargs.values()))
         else:
+            # TODO
+            # The following should happen on the stree level
             for _sd, _aname, arr in sdfg.arrays_recursive():
                 if arr.shape == (1,):
                     arr.storage = DaceStorageType.Register
@@ -142,18 +147,7 @@ def _build_sdfg(
             if k in sdfg_kwargs and tup[1].transient:
                 del sdfg_kwargs[k]
 
-        with DaCeProgress(config, "Simplify (1/2)"):
-            _simplify(sdfg, validate=False, verbose=True)
-
-        # Perform pre-expansion fine tuning
-        with DaCeProgress(config, "Split regions"):
-            splittable_region_expansion(sdfg, verbose=True)
-
-        # Expand the stencil computation Library Nodes with the right expansion
-        with DaCeProgress(config, "Expand"):
-            sdfg.expand_library_nodes()
-
-        with DaCeProgress(config, "Simplify (2/2)"):
+        with DaCeProgress(config, "Simplify"):
             _simplify(sdfg, validate=False, verbose=True)
 
         # Move all memory that can be into a pool to lower memory pressure.
