@@ -5,7 +5,6 @@ import numpy as np
 
 from ndsl.comm.partitioner import TilePartitioner
 from ndsl.constants import N_HALO_DEFAULT, X_DIM, Y_DIM, Z_DIM
-from ndsl.dsl import gt4py_utils as utils
 from ndsl.dsl.stencil import GridIndexing
 from ndsl.grid.generation import GridDefinitions
 from ndsl.grid.helper import (
@@ -22,9 +21,6 @@ from ndsl.halo.data_transformer import QuantityHaloSpec
 from ndsl.initialization.allocator import QuantityFactory
 from ndsl.initialization.sizer import SubtileGridSizer
 from ndsl.quantity import Quantity
-
-
-TRACER_DIM = "tracers"
 
 
 class Grid:
@@ -149,7 +145,6 @@ class Grid:
                     MetricTerms.LON_OR_LAT_DIM: 2,
                     MetricTerms.TILE_DIM: 6,
                     MetricTerms.CARTESIAN_DIM: 3,
-                    TRACER_DIM: len(utils.tracer_variables),
                 },
                 layout=self.layout,
             )
