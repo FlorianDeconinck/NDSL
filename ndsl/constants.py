@@ -1,5 +1,6 @@
 import os
 from enum import Enum
+from typing import Literal
 
 import numpy as np
 
@@ -16,13 +17,29 @@ class ConstantVersions(Enum):
     GEOS = "GEOS"  # Constant as defined in GEOS v11.4.2
 
 
-CONST_VERSION_AS_STR = os.environ.get("PACE_CONSTANTS", "UFS")
+def _get_constant_version(
+    default: Literal["GFDL", "UFS", "GEOS"] = "UFS",
+) -> Literal["GFDL", "UFS", "GEOS"]:
+    if os.getenv("PACE_CONSTANTS", ""):
+        ndsl_log.warning("PACE_CONSTANTS is deprecated. Use NDSL_CONSTANTS instead.")
+        if os.getenv("NDSL_CONSTANTS", ""):
+            ndsl_log.warning(
+                "PACE_CONSTANTS and NDSL_CONSTANTS were both specified. NDSL_CONSTANTS will take precedence."
+            )
 
-try:
-    CONST_VERSION = ConstantVersions[CONST_VERSION_AS_STR]
-    ndsl_log.info(f"Constant selected: {CONST_VERSION}")
-except KeyError as e:
-    raise RuntimeError(f"Constants {CONST_VERSION_AS_STR} is not implemented, abort.")
+    constants_as_str = os.getenv("NDSL_CONSTANTS", os.getenv("PACE_CONSTANTS", default))
+    expected: list[Literal["GFDL", "UFS", "GEOS"]] = ["GFDL", "UFS", "GEOS"]
+
+    if constants_as_str not in expected:
+        raise RuntimeError(
+            f"Constants '{constants_as_str}' is not implemented, abort. Valid values are {expected}."
+        )
+
+    return constants_as_str  # type: ignore
+
+
+CONST_VERSION = ConstantVersions[_get_constant_version()]
+ndsl_log.info(f"Constant selected: {CONST_VERSION}")
 
 #####################
 # Common constants
@@ -158,8 +175,10 @@ else:
     raise RuntimeError("Constant selector failed, bad code.")
 
 SECONDS_PER_DAY = Float(86400.0)
-SBC = 5.670400e-8
+SBC = Float(5.670400e-8)
 """Stefan-Boltzmann constant (W/m^2/K^4)"""
+RHO_H2O = Float(1000.0)
+"""Density of water in kg/m^3"""
 CV_AIR = CP_AIR - RDGAS
 """Heat capacity of dry air at constant volume"""
 RDG = -RDGAS / GRAV
@@ -200,11 +219,13 @@ PSAT = Float(610.78)
 """Saturation vapor pressure at H2O 3pt (Pa)"""
 T_WFR = TICE - Float(40.0)
 """homogeneous freezing temperature"""
-TICE0 = TICE - Float(0.01)
+TICE0 = Float(2.7315e2)
+""" Temp at 0C"""
 T_MIN = Float(178.0)
 """Minimum temperature to freeze-dry all water vapor"""
 T_SAT_MIN = TICE - Float(160.0)
+"""Minimum temperature used in saturation calculations"""
 LAT2 = np.power((HLV + HLF), 2, dtype=Float)
 """Used in bigg mechanism"""
-TTP = 2.7316e2
+TTP = Float(2.7316e2)
 """Temperature of H2O triple point"""

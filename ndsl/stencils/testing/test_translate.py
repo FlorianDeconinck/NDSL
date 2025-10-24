@@ -1,15 +1,15 @@
 # type: ignore
 import copy
 import os
-from typing import Any, Dict, List
+from typing import Any
 
 import numpy as np
 import pytest
 
-import ndsl.dsl.gt4py_utils as gt_utils
 from ndsl.comm.communicator import CubedSphereCommunicator, TileCommunicator
 from ndsl.comm.mpi import MPI, MPIComm
 from ndsl.comm.partitioner import CubedSpherePartitioner, TilePartitioner
+from ndsl.dsl import gt4py_utils as gt_utils
 from ndsl.dsl.dace.dace_config import DaceConfig
 from ndsl.dsl.stencil import CompilationConfig, StencilConfig
 from ndsl.quantity import Quantity
@@ -25,6 +25,7 @@ np.set_printoptions(threshold=4096)
 OUTDIR = "./.translate-outputs"
 GPU_MAX_ERR = 1e-10
 GPU_NEAR_ZERO = 1e-15
+N_THRESHOLD_SAMPLES = int(os.getenv("NDSL_TEST_N_THRESHOLD_SAMPLES", 0))
 
 
 def platform():
@@ -67,9 +68,9 @@ def process_override(threshold_overrides, testobj, test_name, backend):
                         for key in testobj.out_vars.keys():
                             if key not in testobj.ignore_near_zero_errors:
                                 testobj.ignore_near_zero_errors[key] = {}
-                                testobj.ignore_near_zero_errors[key][
-                                    "near_zero"
-                                ] = float(match["all_other_near_zero"])
+                                testobj.ignore_near_zero_errors[key]["near_zero"] = (
+                                    float(match["all_other_near_zero"])
+                                )
 
                 else:
                     raise TypeError(
@@ -78,7 +79,9 @@ def process_override(threshold_overrides, testobj, test_name, backend):
             if "multimodal" in match:
                 parsed_multimodal = match["multimodal"]
                 if "absolute_epsilon" in parsed_multimodal:
-                    testobj.mmr_absolute_eps = float(parsed_multimodal["absolute_eps"])
+                    testobj.mmr_absolute_eps = float(
+                        parsed_multimodal["absolute_epsilon"]
+                    )
                 if "relative_fraction" in parsed_multimodal:
                     testobj.mmr_relative_fraction = float(
                         parsed_multimodal["relative_fraction"]
@@ -89,16 +92,13 @@ def process_override(threshold_overrides, testobj, test_name, backend):
                 testobj.skip_test = bool(match["skip_test"])
         elif len(matches) > 1:
             raise Exception(
-                "misconfigured threshold overrides file, more than 1 specification for "
+                "Misconfigured threshold overrides file, more than 1 specification for "
                 + test_name
                 + " with backend="
                 + backend
                 + ", platform="
                 + platform()
             )
-
-
-N_THRESHOLD_SAMPLES = int(os.getenv("PACE_TEST_N_THRESHOLD_SAMPLES", 10))
 
 
 def get_thresholds(testobj, input_data):
@@ -142,7 +142,7 @@ def _get_thresholds(compute_function, input_data) -> None:
 
 @pytest.mark.sequential
 @pytest.mark.skipif(
-    MPI is not None and MPI.COMM_WORLD.Get_size() > 1,
+    MPI.COMM_WORLD.Get_size() > 1,
     reason="Running in parallel with mpi",
 )
 def test_sequential_savepoint(
@@ -157,8 +157,8 @@ def test_sequential_savepoint(
     xy_indices=True,
 ):
     if case.testobj is None:
-        pytest.xfail(
-            f"no translate object available for savepoint {case.savepoint_name}"
+        raise ValueError(
+            f"No translate object available for savepoint {case.savepoint_name}."
         )
     stencil_config = StencilConfig(
         compilation_config=CompilationConfig(backend=backend),
@@ -178,8 +178,29 @@ def test_sequential_savepoint(
     if case.testobj.skip_test:
         return
     if not case.exists:
-        pytest.skip(f"Data at rank {case.grid.rank} does not exists")
-    input_data = dataset_to_dict(case.ds_in)
+        pytest.skip(f"Data at rank {case.grid.rank} does not exist.")
+
+    if hasattr(case.testobj, "override_input_netcdf_name"):
+        import xarray as xr
+
+        from ndsl.logging import ndsl_log
+
+        out_data = (
+            xr.open_dataset(
+                os.path.join(
+                    case.data_dir, f"{case.testobj.override_input_netcdf_name}.nc"
+                )
+            )
+            .isel(rank=case.grid.rank)
+            .isel(savepoint=case.i_call)
+        )
+        input_data = dataset_to_dict(out_data)
+        ndsl_log.warning(
+            f"You are loading {case.testobj.override_input_netcdf_name} as a custom input file! Here be dragons."
+        )
+    else:
+        input_data = dataset_to_dict(case.ds_in)
+
     input_names = (
         case.testobj.serialnames(case.testobj.in_vars["data_vars"])
         + case.testobj.in_vars["parameters"]
@@ -188,7 +209,7 @@ def test_sequential_savepoint(
         input_data = {name: input_data[name] for name in input_names}
     except KeyError as e:
         raise KeyError(
-            f"Variable {e} was described in the translate test but cannot be found in the NetCDF"
+            f"Variable {e} was described in the translate test but cannot be found in the NetCDF."
         )
     original_input_data = copy.deepcopy(input_data)
     # give the user a chance to load data from other savepoints to allow
@@ -196,9 +217,30 @@ def test_sequential_savepoint(
     case.testobj.extra_data_load(DataLoader(case.grid.rank, case.data_dir))
     # run python version of functionality
     output = case.testobj.compute(input_data)
-    failing_names: List[str] = []
-    passing_names: List[str] = []
-    all_ref_data = dataset_to_dict(case.ds_out)
+    failing_names: list[str] = []
+    passing_names: list[str] = []
+    if hasattr(case.testobj, "override_output_netcdf_name"):
+        import xarray as xr
+
+        from ndsl.logging import ndsl_log
+
+        out_data = (
+            xr.open_dataset(
+                os.path.join(
+                    case.data_dir, f"{case.testobj.override_output_netcdf_name}.nc"
+                )
+            )
+            .isel(rank=case.grid.rank)
+            .isel(savepoint=case.i_call)
+        )
+
+        output_data = dataset_to_dict(out_data)
+        ndsl_log.warning(
+            f"You are loading {case.testobj.override_output_netcdf_name} as a custom output file! Here be dragons."
+        )
+    else:
+        output_data = dataset_to_dict(case.ds_out)
+    all_ref_data = output_data
     ref_data_out = {}
     results = {}
 
@@ -208,7 +250,7 @@ def test_sequential_savepoint(
         try:
             ref_data = all_ref_data[varname]
         except KeyError:
-            raise KeyError(f"Output {varname} couldn't be found in output data")
+            raise KeyError(f"Output {varname} couldn't be found in output data.")
         if hasattr(case.testobj, "subset_output"):
             ref_data = case.testobj.subset_output(varname, ref_data)
         with subtests.test(varname=varname):
@@ -268,7 +310,7 @@ def state_from_savepoint(serializer, savepoint, name_to_std_name):
     properties = RESTART_PROPERTIES
     origin = gt_utils.origin
     state = {}
-    for name, std_name in name_to_std_name.items():
+    for name, _std_name in name_to_std_name.items():
         array = serializer.read(name, savepoint)
         extent = tuple(np.asarray(array.shape) - 2 * np.asarray(origin))
         state["air_temperature"] = Quantity(
@@ -295,7 +337,7 @@ def get_tile_communicator(comm, layout):
 
 @pytest.mark.parallel
 @pytest.mark.skipif(
-    MPI is None or MPI.COMM_WORLD.Get_size() == 1,
+    MPI.COMM_WORLD.Get_size() == 1,
     reason="Not running in parallel with mpi",
 )
 def test_parallel_savepoint(
@@ -324,8 +366,8 @@ def test_parallel_savepoint(
         )
         communicator = get_communicator(mpi_comm, layout)
     if case.testobj is None:
-        pytest.xfail(
-            f"no translate object available for savepoint {case.savepoint_name}"
+        raise ValueError(
+            f"No translate object available for savepoint {case.savepoint_name}"
         )
     stencil_config = StencilConfig(
         compilation_config=CompilationConfig(backend=backend),
@@ -355,7 +397,7 @@ def test_parallel_savepoint(
     out_vars.update(list(case.testobj._base.out_vars.keys()))
     failing_names = []
     passing_names = []
-    ref_data: Dict[str, Any] = {}
+    ref_data: dict[str, Any] = {}
     all_ref_data = dataset_to_dict(case.ds_out)
     results = {}
 
@@ -427,7 +469,7 @@ def test_parallel_savepoint(
 def _report_results(
     savepoint_name: str,
     rank: int,
-    results: Dict[str, BaseMetric],
+    results: dict[str, BaseMetric],
 ) -> None:
     detail_dir = f"{OUTDIR}/details"
     os.makedirs(detail_dir, exist_ok=True)
@@ -448,10 +490,10 @@ def _report_results(
 def _save_datatree(
     testobj,
     # first list over rank, second list over savepoint
-    inputs_list: List[Dict[str, List[np.ndarray]]],
-    output_list: List[Dict[str, List[np.ndarray]]],
-    ref_data: Dict[str, List[np.ndarray]],
-    names: List[str],
+    inputs_list: list[dict[str, list[np.ndarray]]],
+    output_list: list[dict[str, list[np.ndarray]]],
+    ref_data: dict[str, list[np.ndarray]],
+    names: list[str],
 ):
     import xarray as xr
 
@@ -462,6 +504,11 @@ def _save_datatree(
         varname = names[index]
         # Read in dimensions and attributes
         if hasattr(testobj, "outputs") and testobj.outputs != {}:
+            if not isinstance(testobj.outputs, dict):
+                raise ValueError(
+                    f"Expecting `outputs` on translate test to be a dict, got {type(testobj.outputs)}."
+                    " Are you overriding `self.outputs`?"
+                )
             dims = [
                 dim_name + f"_{index}" for dim_name in testobj.outputs[varname]["dims"]
             ]
@@ -506,11 +553,11 @@ def _save_datatree(
 def save_netcdf(
     testobj,
     # first list over rank, second list over savepoint
-    inputs_list: List[Dict[str, List[np.ndarray]]],
-    output_list: List[Dict[str, List[np.ndarray]]],
-    ref_data: Dict[str, List[np.ndarray]],
-    failing_names: List[str],
-    passing_names: List[str],
+    inputs_list: list[dict[str, list[np.ndarray]]],
+    output_list: list[dict[str, list[np.ndarray]]],
+    ref_data: dict[str, list[np.ndarray]],
+    failing_names: list[str],
+    passing_names: list[str],
     out_filename,
 ):
     import xarray as xr

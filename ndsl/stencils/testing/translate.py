@@ -1,20 +1,16 @@
 import logging
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
 import ndsl.dsl.gt4py_utils as utils
 from ndsl.dsl.stencil import StencilFactory
-from ndsl.dsl.typing import Field, Float, Int  # noqa: F401
+from ndsl.optional_imports import cupy as cp
 from ndsl.quantity import Quantity
 from ndsl.stencils.testing.grid import Grid  # type: ignore
 from ndsl.stencils.testing.savepoint import DataLoader
 
-
-try:
-    import cupy as cp
-except ImportError:
-    cp = None
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +29,15 @@ def pad_field_in_j(field, nj: int, backend: str):
 
 
 def as_numpy(
-    value: Union[Dict[str, Any], Quantity, np.ndarray],
-) -> Union[np.ndarray, Dict[str, np.ndarray]]:
-    def _convert(value: Union[Quantity, np.ndarray]) -> np.ndarray:
+    value: dict[str, Any] | Quantity | np.ndarray,
+) -> np.ndarray | dict[str, np.ndarray]:
+    def _convert(value: Quantity | np.ndarray) -> np.ndarray:
         if isinstance(value, Quantity):
             return value.data
-        elif cp is not None and isinstance(value, cp.ndarray):
-            return cp.asnumpy(value)
         elif isinstance(value, np.ndarray):
             return value
+        elif cp is not None and isinstance(value, cp.ndarray):
+            return cp.asnumpy(value)
         else:
             raise TypeError(f"Unrecognized value type: {type(value)}")
 
@@ -64,17 +60,23 @@ class TranslateFortranData2Py:
     mmr_relative_fraction = -1
     mmr_ulp = -1
 
-    def __init__(self, grid, stencil_factory: StencilFactory, origin=utils.origin):
+    def __init__(
+        self,
+        grid,
+        stencil_factory: StencilFactory,
+        origin=utils.origin,
+        skip_test: bool = False,
+    ):
         self.origin = origin
         self.stencil_factory = stencil_factory
-        self.in_vars: Dict[str, Any] = {"data_vars": {}, "parameters": []}
-        self.out_vars: Dict[str, Any] = {}
-        self.write_vars: List = []
+        self.in_vars: dict[str, Any] = {"data_vars": {}, "parameters": []}
+        self.out_vars: dict[str, Any] = {}
+        self.write_vars: list = []
         self.grid = grid
-        self.maxshape: Tuple[int, ...] = grid.domain_shape_full(add=(1, 1, 1))
+        self.maxshape: tuple[int, ...] = grid.domain_shape_full(add=(1, 1, 1))
         self.ordered_input_vars = None
-        self.ignore_near_zero_errors: Dict[str, Any] = {}
-        self.skip_test: bool = False
+        self.ignore_near_zero_errors: dict[str, Any] = {}
+        self.skip_test = skip_test
 
     def extra_data_load(self, data_loader: DataLoader):
         pass
@@ -83,16 +85,16 @@ class TranslateFortranData2Py:
         """Transform inputs to gt4py.storages specification (correct device, layout)"""
         self.make_storage_data_input_vars(inputs)
 
-    def compute_func(self, **inputs) -> Optional[dict[str, Any]]:
+    def compute_func(self, **inputs) -> dict[str, Any] | None:
         """Compute function to transform the dictionary of `inputs`.
-        Must return a dictionnary of updated variables"""
+        Must return a dictionary of updated variables"""
         raise NotImplementedError("Implement a child class compute method")
 
     def compute(self, inputs) -> dict[str, Any]:
-        """Transform inputs from NetCDF to gt4py.storagers, run compute_func then slice
+        """Transform inputs from NetCDF to gt4py.storages, run compute_func then slice
         the outputs based on specifications.
 
-        Return: Dictonnary of storages reshaped for comparison
+        Return: Dictionary of storages reshaped for comparison
         """
         self.setup(inputs)
         return self.slice_output(self.compute_from_storage(inputs))
@@ -104,7 +106,7 @@ class TranslateFortranData2Py:
 
         Hypothesis: `inputs` are `gt4py.storages`
 
-        Return: Outputs in the form of a Dict[str, gt4py.storages]
+        Return: Outputs in the form of a dict[str, gt4py.storages]
         """
         outputs = self.compute_func(**inputs)
         if outputs is not None:
@@ -128,17 +130,17 @@ class TranslateFortranData2Py:
         istart: int = 0,
         jstart: int = 0,
         kstart: int = 0,
-        dummy_axes: Optional[Tuple[int, int, int]] = None,
+        dummy_axes: tuple[int, int, int] | None = None,
         axis: int = 2,
-        names_4d: Optional[List[str]] = None,
+        names_4d: list[str] | None = None,
         read_only: bool = False,
         full_shape: bool = False,
-    ) -> "Field":
+    ) -> dict[str, npt.NDArray] | npt.NDArray:
         """Copy input data into a gt4py.storage with given shape.
 
         `array` is copied. Takes care of the device upload if necessary.
 
-        Return: Array in the form of a Dict[str, gt4py.storages]
+        Return: Array in the form of a dict[str, gt4py.storages]
         """
         use_shape = list(self.maxshape)
         if dummy_axes:
@@ -199,9 +201,12 @@ class TranslateFortranData2Py:
         return istart, jstart, kstart
 
     def make_storage_data_input_vars(
-        self, inputs, storage_vars=None, dict_4d=True
+        self,
+        inputs,
+        storage_vars=None,
+        dict_4d=True,
     ) -> None:
-        """From a set of raw inputs (straight from NetCDF), use the `in_vars` dictionnary to update inputs to
+        """From a set of raw inputs (straight from NetCDF), use the `in_vars` dictionary to update inputs to
         their configured shape.
 
         Return: None
@@ -214,6 +219,9 @@ class TranslateFortranData2Py:
             inputs_out[p] = inputs_in[p]
         for d, info in storage_vars.items():
             serialname = info["serialname"] if "serialname" in info else d
+            index_variable = (
+                info["index_variable"] if "index_variable" in info else False
+            )
             self.update_info(info, inputs_in)
             if "kaxis" in info:
                 inputs_in[serialname] = np.moveaxis(
@@ -231,6 +239,8 @@ class TranslateFortranData2Py:
 
             dummy_axes = info.get("dummy_axes", None)
             axis = info.get("axis", 2)
+            if index_variable:
+                inputs_in[serialname] -= 1
             inputs_out[d] = self.make_storage_data(
                 np.squeeze(inputs_in[serialname]),
                 istart=istart,
@@ -258,9 +268,16 @@ class TranslateFortranData2Py:
             info = self.out_vars[var]
             self.update_info(info, inputs)
             serialname = info["serialname"] if "serialname" in info else var
+            index_variable = (
+                info["index_variable"] if "index_variable" in info else False
+            )
             ds = self.grid.default_domain_dict()
             ds.update(info)
             data_result = as_numpy(out_data[var])
+            if index_variable:
+                if isinstance(data_result, dict):
+                    raise TypeError(f"Variable {serialname} is a 4D dict, not an index")
+                data_result += 1
             if isinstance(data_result, dict):
                 names_4d = info.get("names_4d", utils.tracer_variables)
                 var4d = np.zeros(
@@ -278,7 +295,18 @@ class TranslateFortranData2Py:
                     )
                 out[serialname] = var4d
             else:
-                slice_tuple = self.grid.slice_dict(ds, len(data_result.shape))
+                # Get slice for data dimensions (after original 3D)
+                if len(data_result.shape) > 3:
+                    data_dims_slice = tuple(
+                        [slice(0, ddim_end) for ddim_end in data_result.shape[3:]]
+                    )
+                else:
+                    data_dims_slice = ()
+                # Slice combine the expected cartesian and data_dims
+                cartesian_slice = self.grid.slice_dict(
+                    ds, min(len(data_result.shape), 3)
+                )
+                slice_tuple = cartesian_slice + data_dims_slice
                 out[serialname] = np.squeeze(data_result[slice_tuple])
             if "kaxis" in info:
                 out[serialname] = np.moveaxis(out[serialname], 2, info["kaxis"])
