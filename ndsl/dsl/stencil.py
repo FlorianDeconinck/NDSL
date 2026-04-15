@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import copy
 import dataclasses
 import inspect
@@ -8,6 +9,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, cast
 
 import dace
+from dace.sdfg.analysis.schedule_tree import treenodes as tn
 import numpy as np
 from gt4py.cartesian import config as gt_config
 from gt4py.cartesian import definitions as gt_definitions
@@ -415,6 +417,20 @@ class FrozenStencil(SDFGConvertible):
                 pass
 
             setattr(self, "__call__", nothing_function)  # noqa: B010
+
+        # DaCe pyfrontend2
+        self.f = func
+
+    def _generate_schedule_tree(
+        self,
+        args: tuple[Any],
+        kwargs: dict[str, Any],
+        *,
+        lambda_bindings: dict[str, ast.Lambda] | None = None,
+        callable_bindings: dict[str, Any] | None = None) -> 'tn.ScheduleTreeRoot':
+            # DaCe pyfrontend2
+            return self.stencil_object.__schedule_tree__()
+
 
     def __call__(self, *args: Any, **kwargs: Any) -> None:
         # Verbose stencil execution
