@@ -404,14 +404,18 @@ def _parse_sdfg(
             return None
 
         with DaCeProgress(config, f"Parse code of {dace_program.name} to SDFG"):
-            sdfg = dace_program.to_sdfg(
-                *args,
-                **dace_program.__sdfg_closure__(),
-                **kwargs,
-                save=False,
-                simplify=False,
-                validate=False,  # TODO: should we have a "debug flag" to turn this on?
-            )
+            stree = dace_program.to_schedule_tree(*args, **kwargs)
+            with open("DSL_Orchestration_STREE_parse.txt", "w") as f:
+                f.write(stree.as_string())
+            sdfg = stree.as_sdfg()
+            # sdfg = dace_program.to_sdfg(
+            #     *args,
+            #     **dace_program.__sdfg_closure__(),
+            #     **kwargs,
+            #     save=False,
+            #     simplify=False,
+            #     validate=False,  # TODO: should we have a "debug flag" to turn this on?
+            # )
         return sdfg
 
     if os.path.isfile(sdfg_path):
