@@ -444,7 +444,7 @@ def _parse_sdfg(
 
         with DaCeProgress(config, f"Parse code of {dace_program.name} to SDFG"):
             stree = dace_program.to_schedule_tree(*args, **kwargs)
-            with open("DSL_Orchestration_STREE_parse.txt", "w") as f:
+            with open(f"__parsed_{dace_program.name}.txt", "w+") as f:
                 f.write(stree.as_string())
             sdfg = stree.as_sdfg()
             # sdfg = dace_program.to_sdfg(

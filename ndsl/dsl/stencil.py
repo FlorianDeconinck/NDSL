@@ -568,6 +568,14 @@ class FrozenStencil(SDFGConvertible):
         skip_steps = [step_map[pass_name] for pass_name in skip_passes]
         return DefaultPipeline(skip=skip_steps)
 
+    def __schedule_tree__(self,
+            *args,
+            lambda_bindings: dict[str, ast.AST] | None = None,
+            callable_bindings: dict[str, Any] | None = None,
+            **kwargs,
+        ) -> tn.ScheduleTreeRoot:
+        return self.stencil_object.__schedule_tree__(*args, lambda_bindings, callable_bindings, **kwargs)
+
     def __sdfg__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         """Implemented SDFG generation"""
         args_as_kwargs = dict(zip(self._argument_names, args))
