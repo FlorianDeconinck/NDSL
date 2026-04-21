@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import numbers
 import os
 from collections.abc import Callable, Sequence
@@ -16,6 +17,7 @@ from dace.dtypes import DeviceType as DaceDeviceType
 from dace.dtypes import StorageType as DaceStorageType
 from dace.frontend.python.common import SDFGConvertible
 from dace.frontend.python.parser import DaceProgram
+from dace.sdfg.analysis.schedule_tree import treenodes as tn
 from dace.transformation.auto.auto_optimize import make_transients_persistent
 from dace.transformation.dataflow import MapExpansion
 from dace.transformation.helpers import get_parent_map
@@ -574,6 +576,17 @@ class _LazyComputepathMethod:
                 kwargs,
             )
 
+        def __schedule_tree_signature__(self) -> tuple[Sequence[str], Sequence[str]]:
+            return (self.daceprog.argnames, self.daceprog.constant_args)
+
+        def __schedule_tree__(self,
+                *args,
+                lambda_bindings: dict[str, ast.AST] | None = None,
+                callable_bindings: dict[str, Any] | None = None,
+                **kwargs
+            ) -> tn.ScheduleTreeRoot:
+            return self.daceprog.to_schedule_tree(*args, **kwargs)
+            
         def __sdfg__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
             sdfg = _parse_sdfg(self.daceprog, self.lazy_method.config, *args, **kwargs)
             # Label the code
@@ -681,6 +694,17 @@ def orchestrate(
 
             def __call__(self, *arg, **kwarg):  # type: ignore[no-untyped-def]
                 return wrapped(*arg, **kwarg)
+            
+            def __schedule_tree__(self,
+                    *args,
+                    lambda_bindings: dict[str, ast.AST] | None = None,
+                    callable_bindings: dict[str, Any] | None = None,
+                    **kwargs
+                ) -> tn.ScheduleTreeRoot:
+                return wrapped.__schedule_tree__(*args, lambda_bindings, callable_bindings, **kwargs)
+
+            def __schedule_tree_signature__(self) -> tuple[Sequence[str], Sequence[str]]:
+                return wrapped.__schedule_tree_signature__()
 
             def __sdfg__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
                 return wrapped.__sdfg__(*args, **kwargs)
