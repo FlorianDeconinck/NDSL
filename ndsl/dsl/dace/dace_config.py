@@ -14,7 +14,7 @@ from ndsl.comm import Comm
 from ndsl.comm.communicator import Communicator
 from ndsl.comm.partitioner import Partitioner
 from ndsl.config import Backend
-from ndsl.dsl import NDSL_GLOBAL_PRECISION
+from ndsl.dsl import NDSL_COMPILER_SILENCE, NDSL_GLOBAL_PRECISION
 from ndsl.dsl.caches.cache_location import identify_code_path
 from ndsl.dsl.caches.codepath import FV3CodePath
 from ndsl.optional_imports import cupy as cp
@@ -245,11 +245,12 @@ class DaceConfig:
             march_cpu = "armv8-a" if is_arm_neoverse else "native"
             # Removed --fmath
             cxx_defaults = cxx_compiler_defaults(GT4PY_COMPILE_OPT_LEVEL)
+            warnings_policy = "-Wall" if NDSL_COMPILER_SILENCE else "-w"
             dace.config.Config.set(
                 "compiler",
                 "cpu",
                 "args",
-                value=f"-march={march_cpu} -std=c++17 -fPIC -Wall -Wextra -O{optimization_level} {cxx_defaults.cxx_compile_flags}",
+                value=f"-march={march_cpu} -std=c++17 -fPIC {warnings_policy} -Wextra -O{optimization_level} {cxx_defaults.cxx_compile_flags}",
             )
             # Potentially buggy - deactivate
             dace.config.Config.set(
@@ -270,7 +271,7 @@ class DaceConfig:
                 "compiler",
                 "cuda",
                 "args",
-                value=f"-std=c++14 -Xcompiler -fPIC -O{optimization_level} -Xcompiler {march_option} {gpu_cflags}",
+                value=f"-std=c++14 {warnings_policy} -Xcompiler -fPIC -O{optimization_level} -Xcompiler {march_option} {gpu_cflags}",
             )
 
             cuda_sm = cp.cuda.Device(0).compute_capability if cp else 60
