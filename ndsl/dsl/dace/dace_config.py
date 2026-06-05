@@ -10,6 +10,7 @@ from gt4py.cartesian.config import GT4PY_COMPILE_OPT_LEVEL
 from gt4py.cartesian.utils.compiler import cxx_compiler_defaults, gpu_configuration
 
 from ndsl import LocalComm
+from ndsl.comm import Comm
 from ndsl.comm.communicator import Communicator
 from ndsl.comm.partitioner import Partitioner
 from ndsl.config import Backend
@@ -17,7 +18,11 @@ from ndsl.dsl import NDSL_GLOBAL_PRECISION
 from ndsl.dsl.caches.cache_location import identify_code_path
 from ndsl.dsl.caches.codepath import FV3CodePath
 from ndsl.optional_imports import cupy as cp
-from ndsl.performance.collector import NullPerformanceCollector, PerformanceCollector
+from ndsl.performance.collector import (
+    AbstractPerformanceCollector,
+    NullPerformanceCollector,
+    PerformanceCollector,
+)
 
 
 if TYPE_CHECKING:
@@ -166,8 +171,8 @@ class DaceConfig:
         Args:
             communicator: used for setting the distributed caches
             backend: string for the backend
-            tile_nx: x/y domain size for a single time
-            tile_nz: z domain size for a single time
+            tile_nx: x/y domain size for a single tile
+            tile_nz: z domain size for a single tile
             orchestration: orchestration mode from DaCeOrchestration
             time: trigger performance collection, available to user with
                 `performance_collector`
@@ -181,16 +186,12 @@ class DaceConfig:
         # ToDo: DaceConfig becomes a bit more than a read-only config
         #       with this. Should be refactored into a DaceExecutor carrying a config
         self.loaded_dace_executables: DaceExecutables = {}
-        self.performance_collector = (
-            PerformanceCollector(
-                "InternalOrchestrationTimer",
-                comm=(
-                    LocalComm(0, 6, {}) if communicator is None else communicator.comm
-                ),
+        if not time:
+            self.performance_collector: AbstractPerformanceCollector = (
+                NullPerformanceCollector()
             )
-            if time
-            else NullPerformanceCollector()
-        )
+        else:
+            self.set_timer(communicator.comm if communicator else None)
 
         # Temporary. This is a bit too out of the ordinary for the common user.
         # We should refactor the architecture to allow for a `gtc:orchestrated:dace:X`
@@ -264,11 +265,12 @@ class DaceConfig:
             march_option = "-mcpu=native" if is_arm_neoverse else "-march=native"
             # Removed --fast-math
             gpu_config = gpu_configuration(GT4PY_COMPILE_OPT_LEVEL)
+            gpu_cflags = " ".join(gpu_config.gpu_compile_flags).strip()
             dace.config.Config.set(
                 "compiler",
                 "cuda",
                 "args",
-                value=f"-std=c++14 -Xcompiler -fPIC -O{optimization_level} -Xcompiler {march_option} {gpu_config.gpu_compile_flags}",
+                value=f"-std=c++14 -Xcompiler -fPIC -O{optimization_level} -Xcompiler {march_option} {gpu_cflags}",
             )
 
             cuda_sm = cp.cuda.Device(0).compute_capability if cp else 60
@@ -412,4 +414,20 @@ class DaceConfig:
         config.rank_size = data["rank_size"]
         config.layout = data["layout"]
         config.tile_resolution = data["tile_resolution"]
-        return config
+        # TODO
+        # Computed properties like `self.code_path` and `self.do_compile`
+        # aren't updated.
+        # We also don't `set_distributed_caches()` based on that updated
+        # information.
+        raise NotImplementedError(
+            "Implementation of `DaceConfig.from_dict()` is incomplete."
+        )
+
+    def set_timer(self, comm: Comm | None) -> None:
+        """Set timer on configuration externally"""
+        # TODO: this absolutely should not be a on a Configuration object
+        #      and even less setup outside. Madness, we have lost our ways...
+        self.performance_collector = PerformanceCollector(
+            "InternalOrchestrationTimer",
+            comm=(LocalComm(0, 6, {}) if comm is None else comm),
+        )

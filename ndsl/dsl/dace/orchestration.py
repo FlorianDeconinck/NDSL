@@ -6,25 +6,26 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from dace import SDFG, CompiledSDFG
+from dace import SDFG, CompiledSDFG, DeviceType
 from dace import compiletime as DaceCompiletime
 from dace import dtypes
 from dace import method as dace_method
 from dace import nodes
 from dace import program as dace_program
 from dace.dtypes import DeviceType as DaceDeviceType
+from dace.dtypes import ScheduleType
 from dace.dtypes import StorageType as DaceStorageType
 from dace.frontend.python.common import SDFGConvertible
 from dace.frontend.python.parser import DaceProgram
 from dace.sdfg.analysis.schedule_tree import treenodes as tn
 from dace.transformation.auto.auto_optimize import make_transients_persistent
-from dace.transformation.dataflow import MapExpansion
+from dace.transformation.dataflow import MapCollapse, MapExpansion
 from dace.transformation.helpers import get_parent_map
 from gt4py import storage as gt_storage
 
 import ndsl.dsl.dace.replacements  # noqa # We load in the DaCe replacements
+from ndsl import Backend
 from ndsl.comm.mpi import MPI
-from ndsl.config import BackendLoopOrder
 from ndsl.dsl.dace.build import get_sdfg_path, write_build_info
 from ndsl.dsl.dace.dace_config import (
     DEACTIVATE_DISTRIBUTED_DACE_COMPILE,
@@ -38,13 +39,8 @@ from ndsl.dsl.dace.sdfg_debug_passes import (
     negative_qtracers_checker,
     sdfg_nan_checker,
 )
-from ndsl.dsl.dace.stree import CPUPipeline
-from ndsl.dsl.dace.stree.optimizations import (
-    AxisIterator,
-    CartesianAxisMerge,
-    CartesianRefineTransients,
-    CleanUpScheduleTree,
-)
+from ndsl.dsl.dace.stree import CPUPipeline, GPUPipeline
+from ndsl.dsl.dace.stree.pipeline import StreePipeline
 from ndsl.dsl.dace.utils import (
     DaCeProgress,
     memory_static_analysis,
@@ -59,6 +55,8 @@ _INTERNAL__SCHEDULE_TREE_OPTIMIZATION: bool = (
     os.environ.get("NDSL_STREE_OPT", "False") == "True"
 )
 """INTERNAL: Developer flag to turn the untested schedule tree roundtrip optimizer."""
+
+_INTERNAL__SCHEDULE_TREE_OPTIMIZATION_PASSES: list[tn.ScheduleNodeVisitor] | None = None
 
 
 def dace_inhibitor(func: Callable) -> Callable:
@@ -149,6 +147,24 @@ def _tree_as_sdfg(stree: tn.ScheduleTreeRoot) -> SDFG:
     return stree.as_sdfg(skip={"ScalarToSymbolPromotion", "ControlFlowRaising"})
 
 
+def _optimization_pipeline(
+    device_type: DeviceType,
+    backend: Backend,
+    *,
+    passes: list[tn.ScheduleNodeVisitor] | None = None,
+    cache_directory: Path | None = None,
+) -> StreePipeline:
+    if device_type == device_type.CPU:
+        return CPUPipeline(backend, passes=passes, cache_directory=cache_directory)
+
+    if device_type == DeviceType.GPU:
+        return GPUPipeline(backend, passes=passes, cache_directory=cache_directory)
+
+    raise ValueError(
+        f"Unknown device type `{device_type}`, expected {DeviceType.CPU} or {DeviceType.GPU}."
+    )
+
+
 def _build_sdfg(
     dace_program: DaceProgram, sdfg: SDFG, config: DaceConfig, args: Any, kwargs: Any
 ) -> None:
@@ -188,7 +204,18 @@ def _build_sdfg(
             # Here be 🐉 - but tests exists in test_optimization.py
             with DaCeProgress(config, "Schedule Tree: generate from SDFG"):
                 # Break all loops into uni-dimensional loops to simplify optimizations
-                sdfg.apply_transformations_repeated(MapExpansion, validate=True)
+                sdfg.apply_transformations_repeated(
+                    MapExpansion,
+                    options={
+                        "inner_schedule": (
+                            ScheduleType.GPU_Device
+                            if device_type is DeviceType.GPU
+                            else ScheduleType.Default
+                        )
+                    },
+                    validate=True,
+                    print_report=True,
+                )
                 stree = sdfg.as_schedule_tree()
                 if config.verbose_orchestration:
                     with open(
@@ -198,44 +225,13 @@ def _build_sdfg(
                         f.write(stree.as_string())
 
             with DaCeProgress(config, "Schedule Tree: optimization"):
-                passes = []
-                if backend_name.loop_order == BackendLoopOrder.IJK:
-                    passes.extend(
-                        [
-                            CleanUpScheduleTree(),
-                            CartesianAxisMerge(AxisIterator._I),
-                            CartesianAxisMerge(AxisIterator._J),
-                            CartesianAxisMerge(AxisIterator._K),
-                            CartesianRefineTransients(backend_name),
-                        ]
-                    )
-                elif backend_name.loop_order == BackendLoopOrder.KJI:
-                    passes.extend(
-                        [
-                            CleanUpScheduleTree(),
-                            CartesianAxisMerge(AxisIterator._K),
-                            CartesianAxisMerge(AxisIterator._J),
-                            CartesianAxisMerge(AxisIterator._I),
-                            CartesianRefineTransients(backend_name),
-                        ]
-                    )
-                elif backend_name.loop_order == BackendLoopOrder.KIJ:
-                    passes.extend(
-                        [
-                            CleanUpScheduleTree(),
-                            CartesianAxisMerge(AxisIterator._K),
-                            CartesianAxisMerge(AxisIterator._I),
-                            CartesianAxisMerge(AxisIterator._J),
-                            CartesianRefineTransients(backend_name),
-                        ]
-                    )
-                else:
-                    raise NotImplementedError(
-                        f"Loop order {backend_name.loop_order} has no schedule tree pipeline"
-                    )
-                CPUPipeline(passes=passes, cache_directory=Path(sdfg.build_folder)).run(
-                    stree, verbose=config.verbose_schedule_tree_optimizations
+                pipeline = _optimization_pipeline(
+                    device_type,
+                    backend_name,
+                    cache_directory=Path(sdfg.build_folder),
+                    passes=_INTERNAL__SCHEDULE_TREE_OPTIMIZATION_PASSES,
                 )
+                pipeline.run(stree, verbose=config.verbose_schedule_tree_optimizations)
                 if config.verbose_orchestration:
                     with open(
                         os.path.abspath(f"{sdfg.build_folder}/03-post_opt.stree.txt"),
@@ -250,6 +246,7 @@ def _build_sdfg(
                         os.path.abspath(f"{sdfg.build_folder}/04-from_stree.sdfgz"),
                         compress=True,
                     )
+                sdfg.apply_transformations_repeated(MapCollapse)
 
         # Make the transients array persistents
         if config.is_gpu_backend():

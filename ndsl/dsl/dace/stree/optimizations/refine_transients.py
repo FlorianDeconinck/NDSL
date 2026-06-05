@@ -4,7 +4,7 @@ import dace.data
 import dace.sdfg.analysis.schedule_tree.treenodes as stree
 
 from ndsl.config import Backend, BackendFramework
-from ndsl.dsl.dace.stree.optimizations.memlet_helpers import AxisIterator
+from ndsl.dsl.dace.stree.optimizations.common import AxisIterator
 from ndsl.logging import ndsl_log
 
 
@@ -34,15 +34,11 @@ def _reduce_cartesian_axis_size_to_1(
     are atomic"""
 
     # Dev Note: Better dataflow analysis would look at exactly
-    #           what's goin on here!
+    #           what's going on here!
 
     # Assume 3D cartesian!
     if len(transient_data.shape) < 3:
-        warnings.warn(
-            f"Potential non-3D array: {transient_data}, skipping.",
-            UserWarning,
-            stacklevel=2,
-        )
+        ndsl_log.debug(f"Potential non-3D array: {transient_data}, skipping.")
         return False
 
     read_write_range: dace.subsets.Range = dace.subsets.union(
@@ -210,7 +206,7 @@ class CartesianRefineTransients(stree.ScheduleNodeTransformer):
         cartesian axis) it will reduce that axis to 1 if all access are atomic
         (exactly _one_ element of the array is ever worked on in a single loop)
         - It will refuse to merge if the transient is used in multiple loops of for
-        a given axis - irrigardless of it's access pattern (e.g. even if it could be
+        a given axis - regardless of it's access pattern (e.g. even if it could be
         refine because it's always written first.)
 
     It should but cannot do/will bug if:
