@@ -57,17 +57,10 @@ def get_gpu_hardware_defaults() -> GPUHardwareDefaults:
     if _GPU_HARDWARE_DEFAULTS is not None:
         return _GPU_HARDWARE_DEFAULTS  # type: ignore[unreachable]
 
-    if not cp or not cp.cuda.is_available():
-        ndsl_log.warning("No cupy - defaulting for GPU hardware")
-        _GPU_HARDWARE_DEFAULTS = GPUHardwareDefaults(
-            vendor="Unknown",
-            block_size=[
-                8,
-                1,
-                1,
-            ],  # Smaller common denominator of massively parallel hardware
-        )
-        return _GPU_HARDWARE_DEFAULTS
+    if not cp:
+        raise ModuleNotFoundError("Cupy must be installed to read hardware defaults")
+    if not cp.cuda.is_available():
+        raise RuntimeError("No device available for hardware defaults read")
 
     # Who goes there
     vendor = _get_vendor()
