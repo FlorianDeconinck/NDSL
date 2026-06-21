@@ -232,9 +232,9 @@ class DaceConfig:
             self.do_compile = True
 
         self._local_domain = [
-            tile_nx / self.layout[0],
-            tile_nx / self.layout[1],
-            tile_nz,
+            int(tile_nx / self.layout[0]),
+            int(tile_nx / self.layout[1]),
+            tile_nz
         ]
 
         # Verbose optimizations
