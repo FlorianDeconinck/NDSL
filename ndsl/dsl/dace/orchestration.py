@@ -503,6 +503,8 @@ def _parse_sdfg(
         dace_program: the DaceProgram carrying reference to the original method/function
         config: the DaceConfig configuration for this execution
     """
+    config.set_orchestration_cachename()
+    
     # Check cache for already loaded SDFG
     if dace_program in config.loaded_dace_executables:
         return config.loaded_dace_executables[dace_program].compiled_sdfg
