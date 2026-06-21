@@ -207,6 +207,36 @@ class DaceConfig:
         else:
             self._orchestrate = orchestration
 
+        self.tile_resolution = [tile_nx, tile_nx, tile_nz]
+        from ndsl.dsl.dace.build import set_distributed_caches
+
+        # Distributed build required info
+        if communicator:
+            self.my_rank = communicator.rank
+            self.rank_size = communicator.comm.Get_size()
+            self.code_path = identify_code_path(
+                self.my_rank,
+                communicator.partitioner,
+                self._single_code_path,
+            )
+            self.layout = communicator.partitioner.layout
+            self.do_compile = (
+                DEACTIVATE_DISTRIBUTED_DACE_COMPILE
+                or _determine_compiling_ranks(self, communicator.partitioner)
+            )
+        else:
+            self.my_rank = 0
+            self.rank_size = 1
+            self.code_path = FV3CodePath.All
+            self.layout = (1, 1)
+            self.do_compile = True
+
+        self._local_domain = [
+            tile_nx / self.layout[0],
+            tile_nx / self.layout[1],
+            tile_nz,
+        ]
+
         # Verbose optimizations
         self.verbose_orchestration = (
             os.getenv("NDSL_VERBOSE_ORCHESTRATION", "False") == "True"
@@ -359,36 +389,25 @@ class DaceConfig:
             # Debug lineinfo is incorrect anyway for the stencils
             dace.config.Config.set("compiler", "lineinfo", value="none")
 
+            # Compute local domain
+            dace.config.Config.set(
+                "default_build_folder", value=self.get_orchestrate_cachename()
+            )
+
         # Attempt to kill the dace.conf to avoid confusion
         dace_conf_to_kill = dace.config.Config.cfg_filename()
         if dace_conf_to_kill is not None:
             Path(dace_conf_to_kill).unlink(missing_ok=True)
 
-        self.tile_resolution = [tile_nx, tile_nx, tile_nz]
-        from ndsl.dsl.dace.build import set_distributed_caches
-
-        # Distributed build required info
-        if communicator:
-            self.my_rank = communicator.rank
-            self.rank_size = communicator.comm.Get_size()
-            self.code_path = identify_code_path(
-                self.my_rank,
-                communicator.partitioner,
-                self._single_code_path,
-            )
-            self.layout = communicator.partitioner.layout
-            self.do_compile = (
-                DEACTIVATE_DISTRIBUTED_DACE_COMPILE
-                or _determine_compiling_ranks(self, communicator.partitioner)
-            )
-        else:
-            self.my_rank = 0
-            self.rank_size = 1
-            self.code_path = FV3CodePath.All
-            self.layout = (1, 1)
-            self.do_compile = True
-
         set_distributed_caches(self)
+
+    def get_orchestrate_cachename(self) -> str:
+        local_domain_id = (
+            f"{self._local_domain[0]}x{self._local_domain[1]}x{self._local_domain[2]}"
+            if self._local_domain[0] != 0
+            else "nogrid"
+        )
+        return f".dacecache.{self._backend.as_safe_for_path()}.{local_domain_id}"
 
     def is_dace_orchestrated(self) -> bool:
         return self._backend.is_orchestrated()

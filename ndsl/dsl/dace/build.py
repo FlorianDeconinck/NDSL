@@ -82,7 +82,9 @@ def get_sdfg_path(
 
     # Case of loading a precompiled .so - lookup using GT_CACHE
     cache_fullpath = get_cache_fullpath(config.code_path)
-    sdfg_dir_path = f"{cache_fullpath}/dacecache/{daceprog_name}"
+    sdfg_dir_path = (
+        f"{cache_fullpath}/{config.get_orchestrate_cachename()}/{daceprog_name}"
+    )
     if not os.path.isdir(sdfg_dir_path):
         raise RuntimeError(f"Precompiled SDFG is missing at {sdfg_dir_path}")
 
@@ -151,9 +153,10 @@ def set_distributed_caches(config: DaceConfig, force_build: bool = False) -> Non
     # A better build system would deal with this in BOTH cases.
     dace_conf.Config.set(
         "default_build_folder",
-        value="{gt_root}/{gt_cache}/dacecache".format(
+        value="{gt_root}/{gt_cache}/{dace_cache}".format(
             gt_root=gt_config.cache_settings["root_path"],
             gt_cache=gt_config.cache_settings["dir_name"],
+            dace_cache=config.get_orchestrate_cachename(),
         ),
     )
 

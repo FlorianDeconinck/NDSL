@@ -323,9 +323,10 @@ class FrozenStencil(SDFGConvertible):
         ):
             dace.Config.set(
                 "default_build_folder",
-                value="{gt_root}/{gt_cache}/dacecache".format(
+                value="{gt_root}/{gt_cache}/{orchestrated_cache}".format(
                     gt_root=gt_config.cache_settings["root_path"],
                     gt_cache=gt_config.cache_settings["dir_name"],
+                    orchestrated_cache=stencil_config.dace_config.get_orchestrate_cachename(),
                 ),
             )
 
