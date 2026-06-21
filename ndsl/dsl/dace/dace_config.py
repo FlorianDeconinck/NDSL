@@ -234,7 +234,7 @@ class DaceConfig:
         self._local_domain = [
             int(tile_nx / self.layout[0]),
             int(tile_nx / self.layout[1]),
-            tile_nz
+            tile_nz,
         ]
 
         # Verbose optimizations
