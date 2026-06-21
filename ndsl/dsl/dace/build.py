@@ -80,11 +80,8 @@ def get_sdfg_path(
             )
         return sdfg_file_path
 
-    # Case of loading a precompiled .so - lookup using GT_CACHE
-    cache_fullpath = get_cache_fullpath(config.code_path)
-    sdfg_dir_path = (
-        f"{cache_fullpath}/{config.get_orchestrate_cachename()}/{daceprog_name}"
-    )
+    # Case of loading a precompiled .so
+    sdfg_dir_path = f"{config.get_orchestrate_cachename()}/{daceprog_name}"
     if not os.path.isdir(sdfg_dir_path):
         raise RuntimeError(f"Precompiled SDFG is missing at {sdfg_dir_path}")
 

@@ -15,7 +15,7 @@ from ndsl.comm.communicator import Communicator
 from ndsl.comm.partitioner import Partitioner
 from ndsl.config import Backend
 from ndsl.dsl import NDSL_COMPILER_SILENCE, NDSL_GLOBAL_PRECISION
-from ndsl.dsl.caches.cache_location import identify_code_path
+from ndsl.dsl.caches.cache_location import get_cache_fullpath, identify_code_path
 from ndsl.dsl.caches.codepath import FV3CodePath
 from ndsl.dsl.dace.hardware_config import get_gpu_hardware_defaults
 from ndsl.optional_imports import cupy as cp
@@ -389,10 +389,8 @@ class DaceConfig:
             # Debug lineinfo is incorrect anyway for the stencils
             dace.config.Config.set("compiler", "lineinfo", value="none")
 
-            # Compute local domain
-            dace.config.Config.set(
-                "default_build_folder", value=self.get_orchestrate_cachename()
-            )
+            # Set the orchestration cachename
+            self.set_orchestration_cachename()
 
         # Attempt to kill the dace.conf to avoid confusion
         dace_conf_to_kill = dace.config.Config.cfg_filename()
@@ -401,13 +399,22 @@ class DaceConfig:
 
         set_distributed_caches(self)
 
+    def set_orchestration_cachename(self) -> None:
+        """dace.config.Config is a state - we provide an setter to reset the state as often
+        as possible"""
+        dace.config.Config.set(
+            "default_build_folder", value=self.get_orchestrate_cachename()
+        )
+
     def get_orchestrate_cachename(self) -> str:
         local_domain_id = (
             f"{self._local_domain[0]}x{self._local_domain[1]}x{self._local_domain[2]}"
             if self._local_domain[0] != 0
             else "nogrid"
         )
-        return f".dacecache.{self._backend.as_safe_for_path()}.{local_domain_id}"
+        cache_fullpath = get_cache_fullpath(self.code_path)
+
+        return f"{cache_fullpath}/.dacecache.{self._backend.as_safe_for_path()}.{local_domain_id}"
 
     def is_dace_orchestrated(self) -> bool:
         return self._backend.is_orchestrated()
