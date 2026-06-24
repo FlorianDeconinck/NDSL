@@ -2,13 +2,13 @@ import pytest
 from dace import nodes
 from dace.sdfg.state import LoopRegion
 
-from ndsl import Backend, NDSLRuntime, orchestrate
+from ndsl import Backend, NDSLRuntime, OptimizationConfig, orchestrate
 from ndsl.boilerplate import get_factories_single_tile
 from ndsl.constants import I_DIM, J_DIM, K_DIM
 from ndsl.dsl.gt4py import BACKWARD, FORWARD, PARALLEL, computation, interval
 from ndsl.dsl.stencil import StencilFactory
 from ndsl.dsl.typing import FloatField
-from tests.dsl.dace.stree import StreeOptimization, get_SDFG_and_purge
+from tests.dsl.dace.stree import get_SDFG_and_purge
 from tests.dsl.dace.stree.optimizations import Factories
 
 
@@ -46,7 +46,13 @@ def stencil_only_parallel_noop(
 
 class OrchestratedCode(NDSLRuntime):
     def __init__(self, stencil_factory: StencilFactory) -> None:
-        super().__init__(stencil_factory)
+        optimization_config = OptimizationConfig(
+            stree=OptimizationConfig.Tree(
+                enabled=True,
+                merger=OptimizationConfig.Tree.Merger(enabled=True),
+            )
+        )
+        super().__init__(stencil_factory, optimization_config)
 
         methods_to_orchestrate = [
             "kernelize_k",
@@ -58,6 +64,7 @@ class OrchestratedCode(NDSLRuntime):
                 obj=self,
                 config=stencil_factory.config.dace_config,
                 method_to_orchestrate=method,
+                optimization_config=optimization_config,
             )
 
         self._stencil_kernelize_k = stencil_factory.from_dims_halo(
@@ -107,8 +114,7 @@ class TestKernelizeMaps:
         in_field = quantity_factory.ones((I_DIM, J_DIM, K_DIM), "")
         out_field = quantity_factory.zeros((I_DIM, J_DIM, K_DIM), "")
 
-        with StreeOptimization():
-            code.kernelize_k(in_field, out_field)
+        code.kernelize_k(in_field, out_field)
 
         precompiled_sdfg = get_SDFG_and_purge(stencil_factory)
 

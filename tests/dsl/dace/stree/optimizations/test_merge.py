@@ -4,13 +4,14 @@ from dace import nodes
 from dace.sdfg.analysis.schedule_tree import treenodes as tn
 from dace.sdfg.state import LoopRegion
 
-from ndsl import QuantityFactory, StencilFactory, orchestrate
+from ndsl import OptimizationConfig, QuantityFactory, StencilFactory, orchestrate
 from ndsl.boilerplate import get_factories_single_tile_orchestrated
 from ndsl.config import Backend
 from ndsl.constants import I_DIM, J_DIM, K_DIM
+from ndsl.dsl.dace.stree.pipeline import CartesianMerge, CleanUpScheduleTree
 from ndsl.dsl.gt4py import FORWARD, PARALLEL, K, computation, interval
 from ndsl.dsl.typing import FloatField
-from tests.dsl.dace.stree import StreeOptimization, get_SDFG_and_purge
+from tests.dsl.dace.stree import StreePipeline, get_SDFG_and_purge
 from tests.dsl.dace.stree.optimizations import Factories
 
 
@@ -53,6 +54,12 @@ class OrchestratedCode:
         stencil_factory: StencilFactory,
         quantity_factory: QuantityFactory,
     ) -> None:
+        config = OptimizationConfig(
+            stree=OptimizationConfig.Tree(
+                enabled=True,
+                merger=OptimizationConfig.Tree.Merger(enabled=True),
+            )
+        )
         orchestratable_methods = [
             "trivial_merge",
             "missing_merge_of_forscope_and_map",
@@ -65,6 +72,7 @@ class OrchestratedCode:
                 obj=self,
                 config=stencil_factory.config.dace_config,
                 method_to_orchestrate=method,
+                optimization_config=config,
             )
 
         self.stencil = stencil_factory.from_dims_halo(
@@ -146,8 +154,7 @@ class TestStreeMergeMapsIJK:
         in_qty = quantity_factory.ones([I_DIM, J_DIM, K_DIM], "")
         out_qty = quantity_factory.zeros([I_DIM, J_DIM, K_DIM], "")
 
-        with StreeOptimization():
-            code.trivial_merge(in_qty, out_qty)
+        code.trivial_merge(in_qty, out_qty)
 
         precompiled_sdfg = get_SDFG_and_purge(stencil_factory)
         all_maps = [
@@ -166,8 +173,7 @@ class TestStreeMergeMapsIJK:
         in_qty = quantity_factory.ones([I_DIM, J_DIM, K_DIM], "")
         out_qty = quantity_factory.zeros([I_DIM, J_DIM, K_DIM], "")
 
-        with StreeOptimization():
-            code.missing_merge_of_forscope_and_map(in_qty, out_qty)
+        code.missing_merge_of_forscope_and_map(in_qty, out_qty)
 
         sdfg = get_SDFG_and_purge(stencil_factory).sdfg
         all_maps = [
@@ -190,8 +196,7 @@ class TestStreeMergeMapsIJK:
         in_qty = quantity_factory.ones([I_DIM, J_DIM, K_DIM], "")
         out_qty = quantity_factory.zeros([I_DIM, J_DIM, K_DIM], "")
 
-        with StreeOptimization():
-            code.overcompute_merge(in_qty, out_qty)
+        code.overcompute_merge(in_qty, out_qty)
 
         sdfg = get_SDFG_and_purge(stencil_factory).sdfg
         all_maps = [
@@ -201,6 +206,39 @@ class TestStreeMergeMapsIJK:
         ]
         assert len(all_maps) == 1  # All maps merged and collapsed
 
+    def test_no_overcompute_merge(
+        self, code: OrchestratedCode, factories: Factories
+    ) -> None:
+        stencil_factory, quantity_factory = factories
+        in_qty = quantity_factory.ones([I_DIM, J_DIM, K_DIM], "")
+        out_qty = quantity_factory.zeros([I_DIM, J_DIM, K_DIM], "")
+
+        no_overcompute = [
+            CleanUpScheduleTree(),
+            CartesianMerge(stencil_factory.backend, overcompute=False),
+        ]
+
+        with StreePipeline(passes=no_overcompute):
+            code.overcompute_merge(in_qty, out_qty)
+
+        sdfg = get_SDFG_and_purge(stencil_factory).sdfg
+
+        all_maps = [
+            me for me, _ in sdfg.all_nodes_recursive() if isinstance(me, nodes.MapEntry)
+        ]
+        k_maps = 0
+        ij_maps = 0
+        for map_entry in all_maps:
+            if len(map_entry.map.params) == 1 and map_entry.map.params[0].startswith(
+                "__k"
+            ):
+                k_maps += 1
+            if map_entry.map.params == ["__i", "__j"]:
+                ij_maps += 1
+
+        assert ij_maps == 1
+        assert k_maps == 2
+
     def test_block_merge_when_dependencies_are_found(
         self, code: OrchestratedCode, factories: Factories
     ) -> None:
@@ -208,9 +246,8 @@ class TestStreeMergeMapsIJK:
         in_qty = quantity_factory.ones([I_DIM, J_DIM, K_DIM], "")
         out_qty = quantity_factory.zeros([I_DIM, J_DIM, K_DIM], "")
 
-        with StreeOptimization():
-            # Forbid merging when data dependencies are detected
-            code.block_merge_when_dependencies_are_found(in_qty, out_qty)
+        # Forbid merging when data dependencies are detected
+        code.block_merge_when_dependencies_are_found(in_qty, out_qty)
 
         sdfg = get_SDFG_and_purge(stencil_factory).sdfg
         all_maps = [
@@ -227,10 +264,9 @@ class TestStreeMergeMapsIJK:
         in_qty = quantity_factory.ones([I_DIM, J_DIM, K_DIM], "")
         out_qty = quantity_factory.zeros([I_DIM, J_DIM, K_DIM], "")
 
-        with StreeOptimization():
-            # Push non-cartesian ForScope inwards, which allow to potentially
-            # merge cartesian maps
-            code.push_non_cartesian_for(in_qty, out_qty)
+        # Push non-cartesian ForScope inwards, which allow to potentially
+        # merge cartesian maps
+        code.push_non_cartesian_for(in_qty, out_qty)
 
         sdfg = get_SDFG_and_purge(stencil_factory).sdfg
         all_maps = [
@@ -264,8 +300,7 @@ class TestStreeMergeMapsKJI:
         in_qty = quantity_factory.ones([I_DIM, J_DIM, K_DIM], "")
         out_qty = quantity_factory.zeros([I_DIM, J_DIM, K_DIM], "")
 
-        with StreeOptimization():
-            code.trivial_merge(in_qty, out_qty)
+        code.trivial_merge(in_qty, out_qty)
 
         precompiled_sdfg = get_SDFG_and_purge(stencil_factory)
         all_maps = [
@@ -284,9 +319,8 @@ class TestStreeMergeMapsKJI:
         in_qty = quantity_factory.ones([I_DIM, J_DIM, K_DIM], "")
         out_qty = quantity_factory.zeros([I_DIM, J_DIM, K_DIM], "")
 
-        with StreeOptimization():
-            # K iterative loop - blocks all merges
-            code.missing_merge_of_forscope_and_map(in_qty, out_qty)
+        # K iterative loop - blocks all merges
+        code.missing_merge_of_forscope_and_map(in_qty, out_qty)
 
         sdfg = get_SDFG_and_purge(stencil_factory).sdfg
         all_maps = [
@@ -309,9 +343,8 @@ class TestStreeMergeMapsKJI:
         in_qty = quantity_factory.ones([I_DIM, J_DIM, K_DIM], "")
         out_qty = quantity_factory.zeros([I_DIM, J_DIM, K_DIM], "")
 
-        with StreeOptimization():
-            # Overcompute merge in K - we merge and introduce an If guard
-            code.overcompute_merge(in_qty, out_qty)
+        # Overcompute merge in K - we merge and introduce an If guard
+        code.overcompute_merge(in_qty, out_qty)
 
         sdfg = get_SDFG_and_purge(stencil_factory).sdfg
         all_maps = [
@@ -328,9 +361,8 @@ class TestStreeMergeMapsKJI:
         in_qty = quantity_factory.ones([I_DIM, J_DIM, K_DIM], "")
         out_qty = quantity_factory.zeros([I_DIM, J_DIM, K_DIM], "")
 
-        with StreeOptimization():
-            # Forbid merging when data dependencies are detected
-            code.block_merge_when_dependencies_are_found(in_qty, out_qty)
+        # Forbid merging when data dependencies are detected
+        code.block_merge_when_dependencies_are_found(in_qty, out_qty)
 
         sdfg = get_SDFG_and_purge(stencil_factory).sdfg
         all_maps = [
@@ -347,10 +379,9 @@ class TestStreeMergeMapsKJI:
         in_qty = quantity_factory.ones([I_DIM, J_DIM, K_DIM], "")
         out_qty = quantity_factory.zeros([I_DIM, J_DIM, K_DIM], "")
 
-        with StreeOptimization():
-            # Push non-cartesian ForScope inwards, which allow to potentially
-            # merge cartesian maps
-            code.push_non_cartesian_for(in_qty, out_qty)
+        # Push non-cartesian ForScope inwards, which allow to potentially
+        # merge cartesian maps
+        code.push_non_cartesian_for(in_qty, out_qty)
 
         sdfg = get_SDFG_and_purge(stencil_factory).sdfg
         all_maps = [

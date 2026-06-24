@@ -5,6 +5,7 @@ import warnings
 from collections.abc import Callable
 from typing import Any, Sequence
 
+from ndsl import OptimizationConfig
 from ndsl.debug import ndsl_debugger
 from ndsl.dsl.dace.orchestration import orchestrate
 from ndsl.dsl.stencil import StencilFactory
@@ -22,10 +23,22 @@ class NDSLRuntime:
 
     The __call__ function will automatically be orchestrated."""
 
-    def __init__(self, stencil_factory: StencilFactory) -> None:
+    def __init__(
+        self,
+        stencil_factory: StencilFactory,
+        optimization_config: OptimizationConfig | None = None,
+    ) -> None:
         self._stencil_factory = stencil_factory
         # Use this flag to detect that the init wasn't done properly
         self._base_class_was_properly_super_init = True
+        if optimization_config is None:
+            # TODO
+            # - Decide where to put defaults.
+            # - For now, they are in the OptimizationConfig object itself.
+            # - We could have specialized defaults here for NDSLRuntime code.
+            self._optimization_config = OptimizationConfig()
+        else:
+            self._optimization_config = optimization_config
 
     def __init_subclass__(cls: type[NDSLRuntime], **kwargs: dict[str, Any]) -> None:
         # WARNING: no code outside the decorators monkey patching!
@@ -120,6 +133,7 @@ class NDSLRuntime:
             orchestrate(
                 obj=self,
                 config=self._stencil_factory.config.dace_config,
+                optimization_config=self._optimization_config,
             )
 
     def __getattribute__(self, name: str) -> Any:

@@ -2,11 +2,12 @@ from pathlib import Path
 
 from dace.sdfg.analysis.schedule_tree import treenodes as tn
 
-from ndsl import Backend, ndsl_log_on_rank_0
+from ndsl import Backend, OptimizationConfig, ndsl_log_on_rank_0
 from ndsl.dsl.dace.stree.optimizations import (
     CartesianMerge,
     CartesianRefineTransients,
     CleanUpScheduleTree,
+    InlineVertical2DWrite,
     KernelizeMaps,
     TreeOptimizationStatistics,
 )
@@ -15,6 +16,7 @@ from ndsl.dsl.dace.stree.optimizations import (
 class StreePipeline:
     def __init__(
         self,
+        config: OptimizationConfig,
         *,
         passes: list[tn.ScheduleNodeVisitor],
         cache_directory: Path | None = None,
@@ -24,6 +26,7 @@ class StreePipeline:
 
         self.cache_directory = cache_directory
         self.passes = passes
+        self.config = config
 
     def __hash__(self) -> int:
         return hash(repr(self))
@@ -53,31 +56,34 @@ class StreePipeline:
                     f.write(stree.as_string())
 
         tree_stats.optimized(stree)
-
-        if verbose:
-            ndsl_log_on_rank_0.info(tree_stats.report())
-
+        ndsl_log_on_rank_0.info(tree_stats.report())
         return stree
 
 
 class CPUPipeline(StreePipeline):
     def __init__(
         self,
+        config: OptimizationConfig,
         backend: Backend,
         *,
         passes: list[tn.ScheduleNodeVisitor] | None = None,
         cache_directory: Path | None = None,
     ) -> None:
         if passes is None:
-            passes = [
-                CleanUpScheduleTree(),
-                # TODO: Is it safe? Deactivate for now
-                # InlineVertical2DWrite(),
-                CartesianMerge(backend),
-                CartesianRefineTransients(backend),
-            ]
+            ppl_passes = [CleanUpScheduleTree()]
+            if config.stree.inline_K_loops_size_one:
+                ppl_passes.append(InlineVertical2DWrite())
+            if config.stree.merger.enabled:
+                ppl_passes.append(
+                    CartesianMerge(backend, overcompute=config.stree.merger.overcompute)
+                )
+            if config.stree.refine_transients:
+                ppl_passes.append(CartesianRefineTransients(backend))
+        else:
+            ppl_passes = passes
         super().__init__(
-            passes=passes if passes is not None else [],
+            config=config,
+            passes=ppl_passes,
             cache_directory=cache_directory,
         )
 
@@ -85,23 +91,34 @@ class CPUPipeline(StreePipeline):
 class GPUPipeline(StreePipeline):
     def __init__(
         self,
+        config: OptimizationConfig,
         backend: Backend,
         *,
         passes: list[tn.ScheduleNodeVisitor] | None = None,
         cache_directory: Path | None = None,
     ) -> None:
         if passes is None:
-            passes = [
-                CleanUpScheduleTree(),
-                # TODO: Is it safe? Deactivate for now
-                # InlineVertical2DWrite(),
-                CartesianMerge(backend),
-                KernelizeMaps(backend),
+            ppl_passes = [CleanUpScheduleTree()]
+            if config.stree.inline_K_loops_size_one:
+                ppl_passes.append(InlineVertical2DWrite())
+            if config.stree.merger.enabled:
+                ppl_passes.append(
+                    CartesianMerge(backend, overcompute=config.stree.merger.overcompute)
+                )
+            if config.stree.kernelize:
+                ppl_passes.append(KernelizeMaps(backend))
+            if config.stree.refine_transients:
+                # TODO
                 # 🐞 Transient refine can't be used
                 #    because of bugs transients showing in code generation
-                # CartesianRefineTransients(backend),
-            ]
+                # ppl_passes.append(CartesianRefineTransients(backend))
+                raise ValueError(
+                    "Transient refinement is currently unavailable in the GPU pipeline."
+                )
+        else:
+            ppl_passes = passes
         super().__init__(
-            passes=passes if passes is not None else [],
+            config=config,
+            passes=ppl_passes,
             cache_directory=cache_directory,
         )
