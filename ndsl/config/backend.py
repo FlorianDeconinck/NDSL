@@ -195,7 +195,7 @@ class Backend:
         if self._device == BackendTargetDevice.CPU:
             return self
         return Backend(
-            f"{self._strategy}:{self._framework}:{BackendTargetDevice.CPU}:{self._loop_order}"
+            f"{self._strategy.value}:{self._framework.value}:{BackendTargetDevice.CPU.value}:{self._loop_order.value}"
         )
 
     def equivalent_stencil_backend(self) -> "Backend":
@@ -203,7 +203,7 @@ class Backend:
         if self._strategy == BackendStrategy.STENCIL:
             return self
         return Backend(
-            f"{BackendStrategy.STENCIL}:{self._framework}:{self._device}:{self._loop_order}"
+            f"{BackendStrategy.STENCIL.value}:{self._framework.value}:{self._device.value}:{self._loop_order.value}"
         )
 
     def is_fortran_aligned(self) -> bool:
