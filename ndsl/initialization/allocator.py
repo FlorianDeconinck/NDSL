@@ -11,11 +11,13 @@ from ndsl.config import Backend
 from ndsl.dsl.typing import Float
 from ndsl.initialization import GridSizer
 from ndsl.internal.hmm import is_hmm_available
+from ndsl.logging import ndsl_log
 from ndsl.quantity import Quantity, QuantityHaloSpec
 from ndsl.quantity.quantity import normalize_dimensions
-from ndsl.logging import ndsl_log
+
 
 _do_once = True
+
 
 class QuantityFactory:
     def __init__(self, sizer: GridSizer, *, backend: Backend) -> None:
@@ -196,6 +198,7 @@ class QuantityFactory:
             backend = self.backend.equivalent_cpu_backend()
             global _do_once
             if _do_once:
+                _do_once = False
                 ndsl_log.info("Allocate HMM-enabled memory")
         else:
             backend = self.backend
