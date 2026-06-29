@@ -1,4 +1,5 @@
 from __future__ import annotations
+from ndsl.internal.hmm import is_hmm_available
 
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -187,12 +188,19 @@ class QuantityFactory:
         shape = self.sizer.get_shape(dims)
         dimensions = normalize_dimensions(dims, shape)
 
+        # When HMM is available on a machine we push the allocation
+        # on the main CPU so we profit from the ATS properly
+        if is_hmm_available():
+            backend = self.backend.equivalent_cpu_backend()
+        else:
+            backend = self.backend
+
         data = allocator(
             shape,
             dtype=dtype,
             aligned_index=origin,
             dimensions=dimensions,
-            backend=self.backend.as_gt4py(),
+            backend=backend.as_gt4py(),
         )
 
         return Quantity(
