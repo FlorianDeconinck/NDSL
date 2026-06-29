@@ -13,7 +13,9 @@ from ndsl.initialization import GridSizer
 from ndsl.internal.hmm import is_hmm_available
 from ndsl.quantity import Quantity, QuantityHaloSpec
 from ndsl.quantity.quantity import normalize_dimensions
+from ndsl.logging import ndsl_log
 
+_do_once = True
 
 class QuantityFactory:
     def __init__(self, sizer: GridSizer, *, backend: Backend) -> None:
@@ -192,6 +194,9 @@ class QuantityFactory:
         # on the main CPU so we profit from the ATS properly
         if is_hmm_available():
             backend = self.backend.equivalent_cpu_backend()
+            global _do_once
+            if _do_once:
+                ndsl_log.info("Allocate HMM-enabled memory")
         else:
             backend = self.backend
 
