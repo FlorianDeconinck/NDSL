@@ -1,3 +1,4 @@
+from ndsl import ndsl_log
 from typing import Any
 
 
@@ -31,8 +32,9 @@ if cupy is not None:
     # Cupy might be available - but not the device
     try:
         cupy.cuda.runtime.deviceSynchronize()
-    except cupy.cuda.runtime.CUDARuntimeError:
-        cupy = None
+    except cupy.cuda.runtime.CUDARuntimeError as e:
+        ndsl_log.critical(f"`cupy` is available but the device seems to be failing {e}")
+        raise e
 
 try:
     import numpy_allocator
