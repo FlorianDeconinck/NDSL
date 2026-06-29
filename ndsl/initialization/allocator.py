@@ -1,5 +1,4 @@
 from __future__ import annotations
-from ndsl.internal.hmm import is_hmm_available
 
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -11,6 +10,7 @@ from gt4py import storage as gt_storage
 from ndsl.config import Backend
 from ndsl.dsl.typing import Float
 from ndsl.initialization import GridSizer
+from ndsl.internal.hmm import is_hmm_available
 from ndsl.quantity import Quantity, QuantityHaloSpec
 from ndsl.quantity.quantity import normalize_dimensions
 
