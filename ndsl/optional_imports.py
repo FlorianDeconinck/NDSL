@@ -1,5 +1,6 @@
-from ndsl import ndsl_log
 from typing import Any
+
+from ndsl import ndsl_log
 
 
 class RaiseWhenAccessed:
