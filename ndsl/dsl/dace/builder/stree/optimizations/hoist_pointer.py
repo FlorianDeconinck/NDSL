@@ -36,7 +36,7 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
         self._axis = axis
         self._aligned_maps = 0
         self._backend = backend
-        self._hoisted_pointer = 0 
+        self._hoisted_pointer = 0
 
     def __str__(self) -> str:
         return f"HoistPointerToMap{self._axis.as_str().lower()}"
@@ -48,7 +48,9 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
 
         ndsl_log.debug(f"🚀 Hoisted {self._hoisted_pointer} pointers")
 
-    def visit_MapScope(self, node: tn.MapScope, memlet_replace: dict[Memlet, Memlet]) -> None:
+    def visit_MapScope(
+        self, node: tn.MapScope, memlet_replace: dict[Memlet, Memlet]
+    ) -> None:
         if is_axis_map(node, self._axis):
             local_memlet_replace = {}
             for memlet in itertools.chain(node.input_memlets(), node.output_memlets()):
@@ -60,7 +62,9 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
                 # Skip non 3D because it's difficult to now the cartesian-ness just with
                 # the data shape, strides or else
                 if len(this_data.shape) > 3:
-                    ndsl_log.debug(f"Data dimensions aren't supported: {array_name}, skipping.")
+                    ndsl_log.debug(
+                        f"Data dimensions aren't supported: {array_name}, skipping."
+                    )
                     continue
 
                 # Escape when the cartesian axis is not covered in shape
@@ -90,19 +94,21 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
                     0,
                     ViewNode(
                         target=array_view_name,
-                        source=array_view_name,
+                        source=memlet.data,
                         memlet=Memlet(expr=f"{array_name}[{self._axis.as_str()}]"),
                         src_desc=this_data,
                         view_desc=array_view,
                     ),
                 )
-                
+
                 # We will need to replace the memlet downstream with a new memlet where
                 # the subset has have the axis removed
                 view_subset = memlet.subset.string_list()
                 view_subset.pop(self._axis.as_cartesian_index())
                 # new_subset = memlet.subset.string_list().pop(1)
-                local_memlet_replace[memlet] = Memlet(expr=f"{array_view_name}[{','.join(view_subset)}]")
+                local_memlet_replace[memlet] = Memlet(
+                    expr=f"{array_view_name}[{','.join(view_subset)}]"
+                )
 
                 # Record for feedback
                 self._hoisted_pointer += 1
@@ -112,20 +118,24 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
         for child in node.children:
             self.visit(child, memlet_replace=memlet_replace)
 
-    def visit_TaskletNode(self, node: tn.TaskletNode, memlet_replace: dict[Memlet, Memlet]) -> None:
+    def visit_TaskletNode(
+        self, node: tn.TaskletNode, memlet_replace: dict[Memlet, Memlet]
+    ) -> None:
         for old_memlet, new_memlet in memlet_replace.items():
             # breakpoint()
             for tasklet_name, tasklet_memlet in node.in_memlets.items():
                 if tasklet_memlet.data != old_memlet.data:
                     continue
                 node.in_memlets[tasklet_name] = new_memlet
-            
+
             for tasklet_name, tasklet_memlet in node.out_memlets.items():
                 if tasklet_memlet.data != old_memlet.data:
                     continue
                 node.out_memlets[tasklet_name] = new_memlet
 
-    def visit_IfScope(self, node: tn.IfScope, memlet_replace: dict[Memlet, Memlet]) -> None:
+    def visit_IfScope(
+        self, node: tn.IfScope, memlet_replace: dict[Memlet, Memlet]
+    ) -> None:
         for memlet in itertools.chain(node.input_memlets(), node.output_memlets()):
             name = memlet.data
             if name not in memlet_replace:
@@ -136,4 +146,3 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
 
         for child in node.children:
             self.visit(child, memlet_replace=memlet_replace)
-            
