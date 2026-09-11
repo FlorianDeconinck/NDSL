@@ -15,6 +15,15 @@ from ndsl.dsl.dace.builder.stree.common import (
 )
 
 
+def _make_rank_list(values_to_rank: list[int]) -> list[int]:
+    """Gives back the rank of the values of list.
+
+    E.g. [10, 0, 20, 40] into [1, 0, 2, 3]
+    """
+    rank = {value: index for index, value in enumerate(sorted(values_to_rank))}
+    return [rank[value] for value in values_to_rank]
+
+
 class HoistPointerToMap(tn.ScheduleNodeVisitor):
     """Attempt to enforce a left hand side write on center, per axis, by moving the bounds
     of the map and local offsets on array access.
@@ -45,28 +54,34 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
             for memlet in itertools.chain(node.input_memlets(), node.output_memlets()):
                 array_name = memlet.data
                 this_data = node.get_root().containers[array_name]
-                if not isinstance(this_data, Array):
+                if not isinstance(this_data, (Array, ArrayView)):
                     continue
 
                 # Skip non 3D because it's difficult to now the cartesian-ness just with
                 # the data shape, strides or else
-                if len(this_data.shape) < 3:
-                    ndsl_log.debug(f"Potential non-3D array: {array_name}, skipping.")
-                    continue   
+                if len(this_data.shape) > 3:
+                    ndsl_log.debug(f"Data dimensions aren't supported: {array_name}, skipping.")
+                    continue
+
+                # Escape when the cartesian axis is not covered in shape
+                # ⚠️ ⚠️ This is buggy because we cannot really differentiate cartesian dimensions
+                # and data dimensions since the information doesn't carry through ⚠️ ⚠️
+                if self._axis.as_cartesian_index() > len(this_data.shape) - 1:
+                    continue
 
                 # Make an array view by pop'ing the axis from the shape
                 # (and recomputing the strides and size)
-                # It will be name OldName__Xview with X the axis
+                # It will be name OldName_Xv with X the axis
                 viewed_data = copy.copy(this_data)
                 viewed_data.lifetime = AllocationLifetime.Scope
+                shape = list(viewed_data.shape)
+                shape.pop(self._axis.as_cartesian_index())
+                strides = list(viewed_data.strides)
+                strides.pop(self._axis.as_cartesian_index())
+                viewed_data.set_shape(tuple(shape))
+                viewed_data.set_strides_from_layout(*_make_rank_list(strides))
                 array_view = ArrayView.view(viewed_data)
-                array_view_name = f"{memlet.data}{self._axis.as_str().upper()}view"
-                new_shape = list(array_view.shape)
-                new_shape.pop(self._axis.as_cartesian_index())
-                array_view.set_shape(new_shape=new_shape)
-                layout = list(self._backend.as_layout_map())
-                layout.pop(self._axis.as_cartesian_index())
-                array_view.set_strides_from_layout(*layout)
+                array_view_name = f"{memlet.data}{self._axis.as_str().upper()[1:]}v"
                 # array_view.set_shape(new_shape=(array_view.shape[1],), strides=(1,))
 
                 # Record the ArrayView and insert the view node
