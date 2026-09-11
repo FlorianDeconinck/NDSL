@@ -1,6 +1,7 @@
 from .memlet import CARTESIAN_AXIS_SYMBOLS  # isort: skip
 from .memlet import AxisIterator  # isort: skip
 from .memlet import no_data_dependencies_on_cartesian_axis  # isort: skip
+from .code_block import replace_variable_name
 from .control_flow import (
     is_axis_for,
     is_axis_map,
@@ -35,5 +36,6 @@ __all__ = [
     "no_data_dependencies_on_cartesian_axis",
     "remove_from_tree",
     "replace_node_in_tree",
+    "replace_variable_name",
     "swap_node_position_in_tree",
 ]
