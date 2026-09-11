@@ -1,6 +1,8 @@
+import copy
 import itertools
 
 from dace.data import Array, ArrayView
+from dace.dtypes import AllocationLifetime
 from dace.memlet import Memlet
 from dace.sdfg.analysis.schedule_tree import treenodes as tn
 from dace.sdfg.analysis.schedule_tree.treenodes import ViewNode
@@ -25,6 +27,7 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
         self._axis = axis
         self._aligned_maps = 0
         self._backend = backend
+        self._hoisted_pointer = 0 
 
     def __str__(self) -> str:
         return f"HoistPointerToMap{self._axis.as_str().lower()}"
@@ -34,7 +37,7 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
         for child in node.children:
             self.visit(child, memlet_replace={})
 
-        ndsl_log.debug("🚀 Hoisted ??? pointers")
+        ndsl_log.debug(f"🚀 Hoisted {self._hoisted_pointer} pointers")
 
     def visit_MapScope(self, node: tn.MapScope, memlet_replace: dict[Memlet, Memlet]) -> None:
         if is_axis_map(node, self._axis):
@@ -47,22 +50,27 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
 
                 # Skip non 3D because it's difficult to now the cartesian-ness just with
                 # the data shape, strides or else
-                # if len(this_data.shape) < 3:
-                #     ndsl_log.debug(f"Potential non-3D array: {array_name}, skipping.")
-                #     continue
-                    
+                if len(this_data.shape) < 3:
+                    ndsl_log.debug(f"Potential non-3D array: {array_name}, skipping.")
+                    continue   
+
+                # Make an array view by pop'ing the axis from the shape
+                # (and recomputing the strides and size)
+                # It will be name OldName__Xview with X the axis
+                viewed_data = copy.copy(this_data)
+                viewed_data.lifetime = AllocationLifetime.Scope
+                array_view = ArrayView.view(viewed_data)
                 array_view_name = f"{memlet.data}{self._axis.as_str().upper()}view"
-                array_view = ArrayView.view(this_data)
-                
-                # new_shape = list(array_view.shape)
-                # new_shape.pop(self._axis.as_cartesian_index())
-                # array_view.set_shape(new_shape=new_shape)
-                # array_view.set_strides_from_layout(*self._backend.as_layout_map())
+                new_shape = list(array_view.shape)
+                new_shape.pop(self._axis.as_cartesian_index())
+                array_view.set_shape(new_shape=new_shape)
+                layout = list(self._backend.as_layout_map())
+                layout.pop(self._axis.as_cartesian_index())
+                array_view.set_strides_from_layout(*layout)
+                # array_view.set_shape(new_shape=(array_view.shape[1],), strides=(1,))
 
-                array_view.set_shape(new_shape=(array_view.shape[1],), strides=(1,))
-
+                # Record the ArrayView and insert the view node
                 node.get_root().containers[array_view_name] = array_view
-
                 node.children.insert(
                     0,
                     ViewNode(
@@ -73,18 +81,19 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
                         view_desc=array_view,
                     ),
                 )
-
                 
-                # new_subset = memlet.subset.string_list()
-                # new_subset.pop(self._axis.as_cartesian_index())
-                new_subset = memlet.subset.string_list().pop(1)
-                # local_memlet_replace[array_name] = array_view_name
-                # local_memlet_replace[array_name] = (array_view_name, Memlet(expr=f"{array_view_name}[{new_subset}]"))
-                local_memlet_replace[memlet] = Memlet(expr=f"{array_view_name}[{new_subset}]")
+                # We will need to replace the memlet downstream with a new memlet where
+                # the subset has have the axis removed
+                view_subset = memlet.subset.string_list()
+                view_subset.pop(self._axis.as_cartesian_index())
+                # new_subset = memlet.subset.string_list().pop(1)
+                local_memlet_replace[memlet] = Memlet(expr=f"{array_view_name}[{','.join(view_subset)}]")
+
+                # Record for feedback
+                self._hoisted_pointer += 1
 
             memlet_replace = local_memlet_replace
 
-        print(memlet_replace)
         for child in node.children:
             self.visit(child, memlet_replace=memlet_replace)
 
@@ -101,14 +110,14 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
                     continue
                 node.out_memlets[tasklet_name] = new_memlet
 
-    def visit_IfScope(self, node: tn.IfScope, memlet_replace: dict[str, tuple[str, Memlet]]) -> None:
+    def visit_IfScope(self, node: tn.IfScope, memlet_replace: dict[Memlet, Memlet]) -> None:
         for memlet in itertools.chain(node.input_memlets(), node.output_memlets()):
             name = memlet.data
             if name not in memlet_replace:
                 continue
 
             # Update the conditional code (and memlet ?)
-            replace_variable_name(node.condition, name, memlet_replace[name][0])
+            replace_variable_name(node.condition, name, memlet_replace[memlet].data)
 
         for child in node.children:
             self.visit(child, memlet_replace=memlet_replace)
