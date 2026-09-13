@@ -2,6 +2,7 @@ import copy
 import enum
 import itertools
 
+from dace import nodes
 from dace.data import Array, ArrayView
 from dace.dtypes import AllocationLifetime
 from dace.memlet import Memlet
@@ -154,7 +155,9 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
         if direction == MemletDirection.INPUT:
             view_node.memlet._edge = MultiConnectorEdge(
                 src=node,
-                src_conn=f"OUT_{array_name}",  # TODO: only applies of isinstance(src, MapEntry) - otherwise None
+                src_conn=(
+                    f"OUT_{array_name}" if isinstance(node, nodes.MapEntry) else None
+                ),
                 dst=view_node,
                 dst_conn="views",
                 data=view_node.memlet,
@@ -165,7 +168,9 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
                 src=view_node,
                 src_conn="views",
                 dst=node,
-                dst_conn=f"IN_{array_name}",  # TODO: only applies if isinstance(dst, MapExit) - otherwise None
+                dst_conn=(
+                    f"IN_{array_name}" if isinstance(node, nodes.MapExit) else None
+                ),
                 data=view_node.memlet,
                 key=0,  # not sure - dummy value
             )
