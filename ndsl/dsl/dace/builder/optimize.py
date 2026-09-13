@@ -100,7 +100,7 @@ def _tree_as_sdfg(stree: tn.ScheduleTreeRoot) -> SDFG:
     # the potential speed gains to be minimal anyway.
     return stree.as_sdfg(
         validate=False,
-        simplify=True,  # D_SW failed validation on merging
+        simplify=False,  # D_SW failed validation on merging
         skip={"ScalarToSymbolPromotion", "ControlFlowRaising", "LiftTrivialIf"},
     )
 

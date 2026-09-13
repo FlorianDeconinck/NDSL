@@ -3,7 +3,6 @@ from pathlib import Path
 from dace.sdfg.analysis.schedule_tree import treenodes as tn
 
 from ndsl import Backend, OptimizationConfig
-from ndsl.dsl.dace.builder.stree.common.memlet import AxisIterator
 from ndsl.dsl.dace.builder.stree.optimizations import (
     CartesianMergePipeline,
     CartesianRefineTransients,
@@ -12,7 +11,6 @@ from ndsl.dsl.dace.builder.stree.optimizations import (
     KernelizeMaps,
     LocalOptimizations,
 )
-from ndsl.dsl.dace.builder.stree.optimizations.hoist_pointer import HoistPointerToMap
 from ndsl.dsl.dace.builder.stree.pipeline import StreePipeline
 from ndsl.dsl.optimization_config import OptimizationHint, OptimizationOption
 
@@ -48,9 +46,6 @@ class CPUPipeline(StreePipeline):
                 ppl_passes.append(CartesianRefineTransients(backend))
         else:
             ppl_passes = passes
-
-        ppl_passes.append(HoistPointerToMap(backend, AxisIterator._K))
-        ppl_passes.append(HoistPointerToMap(backend, AxisIterator._J))
         super().__init__(
             passes=ppl_passes,
             cache_directory=cache_directory,

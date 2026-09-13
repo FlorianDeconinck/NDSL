@@ -55,7 +55,7 @@ class OptimizationConfig:
         """"Remove serial for loops of size one in the K-axis."""
 
         kernelize: OptimizationOption = OptimizationOption.AUTO
-        """Enable maximizing 3-axis kernelization by duplicating maps. Useful in parallel computing context (e.g. GPU)."""
+        """Enable maximizing 3-axis kernelization by duplicating maps (GPU only)."""
 
         merger: Merger = field(default_factory=Merger)
         """Configuration object for cartesian axis merging."""
@@ -76,5 +76,5 @@ class OptimizationConfig:
     gpu: GPU = field(default_factory=GPU)
     """GPU-only optimization options"""
 
-    hint: OptimizationHint = OptimizationHint.SERIAL
+    hint: OptimizationHint = OptimizationHint.PARALLEL
     """Hint for all optimizations passes"""
