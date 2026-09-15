@@ -144,12 +144,18 @@ class HoistPointerToMap(tn.ScheduleNodeVisitor):
         # array_view.set_shape(new_shape=(array_view.shape[1],), strides=(1,))
 
         # Record the ArrayView and insert the view node
-        index_expr = ",".join(["0"] * len(viewed_data.shape) + [self._axis.as_str()])
-        memlet_expr = f"{array_name}[{index_expr}]"
+        index_expr = "["
+        for i, d in enumerate(this_data.shape):
+            if i == self._axis.as_cartesian_index():
+                index_expr += self._axis.as_str() + ","
+            else:
+                index_expr += f"0:{d},"
+        index_expr = index_expr[:-1] + "]"
+        memlet_expr = f"{array_name}{index_expr}"
         view_node = ViewNode(
             target=array_view_name,
             source=memlet.data,
-            memlet=Memlet(memlet_expr),
+            memlet=Memlet(expr=memlet_expr),
             src_desc=this_data,
             view_desc=array_view,
         )
