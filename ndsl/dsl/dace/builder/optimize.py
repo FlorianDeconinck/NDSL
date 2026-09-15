@@ -13,6 +13,7 @@ from dace.sdfg.analysis.schedule_tree import treenodes as tn
 from dace.transformation.auto.auto_optimize import make_transients_persistent
 from dace.transformation.dataflow import MapCollapse, MapExpansion
 from dace.transformation.dataflow.add_threadblock_map import AddThreadBlockMap
+from dace.transformation.dataflow.map_for_loop import MapToForLoop
 from dace.transformation.helpers import get_parent_map
 
 from ndsl import Backend, OptimizationConfig, ndsl_log
@@ -31,6 +32,7 @@ from ndsl.dsl.dace.utils import (
     report_memory_static_analysis,
     upload_to_device,
 )
+from ndsl.dsl.optimization_config import OptimizationHint
 
 _INTERNAL__SCHEDULE_TREE_OPTIMIZATION_PASSES: list[tn.ScheduleNodeVisitor] | None = None
 
@@ -149,7 +151,7 @@ def optimize_full_program_sdfg(
     if optimization_config is None:
         ndsl_log.debug(f"Using default optimization config for {parsed_sdfg.label}.")
         optimization_config = OptimizationConfig()
-
+    optimization_config.concretize(config.get_backend())
     ndsl_log.debug(f"Compiling config:\n{pformat(optimization_config, indent=2)}")
 
     # Fully specialize all known symbols and then propagate these changes in the simplify
@@ -201,9 +203,7 @@ def optimize_full_program_sdfg(
             )
 
     if optimization_config.stree.enabled:
-        # Here be 🐉 - but tests exists in test_optimization.py
-        with DaCeProgress(mode, "Schedule Tree: generate from SDFG"):
-            # Break all loops into uni-dimensional loops to simplify optimizations
+        with DaCeProgress(mode, "Expand maps (pre tree conversion)"):
             parsed_sdfg.apply_transformations_repeated(
                 MapExpansion,
                 options={
@@ -215,6 +215,9 @@ def optimize_full_program_sdfg(
                 },
                 validate=False,
             )
+        # Here be 🐉 - but tests exists in test_optimization.py
+        with DaCeProgress(mode, "Schedule Tree: generate from SDFG"):
+            # Break all loops into uni-dimensional loops to simplify optimizations
             stree = parsed_sdfg.as_schedule_tree()
             if config.verbose_orchestration:
                 ndsl_log.debug("saving 02-pre_opt.stree.txt")
@@ -251,6 +254,26 @@ def optimize_full_program_sdfg(
                     os.path.abspath(f"{parsed_sdfg.build_folder}/04-from_stree.sdfgz"),
                     compress=True,
                 )
+
+    # TODO: the schedule CartesianMerge doesn't know how to merge For loops so
+    #       we delay swapping everything to serial loops. This should be done
+    #       as quickly as possible
+    if optimization_config.hint == OptimizationHint.SERIAL:
+        with DaCeProgress(mode, "Swap all maps to serial loop"):
+            parsed_sdfg.apply_transformations_repeated([MapExpansion, MapToForLoop])
+
+    if optimization_config.array_access_via_cursor_arithmetic:
+        with DaCeProgress(mode, "Swap memlet schedule to LoopCursor"):
+            try:
+                from dace.transformation.passes.memlet_schedules import (
+                    ScheduleLoopCursors,
+                )
+            except ModuleNotFoundError:
+                ndsl_log.debug("The experimental ScheduleLoopCursos is not available")
+                ScheduleLoopCursors = None
+            if ScheduleLoopCursors:
+                result = ScheduleLoopCursors(scope="all").apply_pass(parsed_sdfg, {})
+                ndsl_log.debug(result)
 
     # We want all maps properly collapse to make sure the codegen will see nD parallel
     # axis as a single kernelizable map
