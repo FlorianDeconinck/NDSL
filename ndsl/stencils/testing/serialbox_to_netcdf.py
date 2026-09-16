@@ -116,7 +116,7 @@ def main(
     else:
         if layout is None or npx is None or npy is None or grid_type is None:
             raise FileNotFoundError(
-                f"Can't find input.nml in {data_path}. Provide --layout X Y, "
+                f"Can't find input.nml in {data_path}. You must provide --layout X Y, "
                 "--npx, --npy, and --grid-type."
             )
         print(
