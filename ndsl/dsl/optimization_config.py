@@ -52,7 +52,7 @@ class OptimizationConfig:
             When merging allow vertical maps (K) of different sizes to merge by inserting an `if` guard.
             """
 
-            overcompute_horizontal: bool = True
+            overcompute_horizontal: bool = False
             """
             When merging allow horizontal maps (I and J) of different sizes to
             merge by inserting an `if` guard.
