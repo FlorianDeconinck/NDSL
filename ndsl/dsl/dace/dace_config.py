@@ -279,12 +279,17 @@ class DaceConfig:
                 optimization_flags = "-mno-fma"
             else:
                 optimization_flags = "-mno-fma"
+            cpp_standard = "c++20"
             warnings_policy = "-w" if NDSL_COMPILER_SILENCE else "-Wall"
             dace.config.Config.set(
                 "compiler",
                 "cpu",
                 "args",
-                value=f"-march={march_cpu} {optimization_flags} {warnings_policy} {cxx_defaults.cxx_compile_flags}",
+                value=(
+                    f"-march={march_cpu} {optimization_flags} "
+                    f" {warnings_policy} {cxx_defaults.cxx_compile_flags} "
+                    f" -std={cpp_standard}"
+                ),
             )
             # Potentially buggy - deactivate
             dace.config.Config.set(
