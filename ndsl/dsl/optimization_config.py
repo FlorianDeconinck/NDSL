@@ -1,7 +1,10 @@
 import enum
 import os
-from dataclasses import dataclass, field, fields, is_dataclass
+import pathlib
+from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from typing import Any
+
+import yaml
 
 from ndsl import Backend
 
@@ -120,6 +123,51 @@ class OptimizationConfig:
 
     hint: OptimizationHint = OptimizationHint.AUTO
     """Hint for all optimizations passes"""
+
+    @classmethod
+    def get_default(cls) -> "OptimizationConfig":
+        config_filename = pathlib.Path(os.getenv("NDSL_OPTIMIZATION_CONFIG", ""))
+        if not config_filename.exists():
+            return OptimizationConfig()
+
+        with config_filename.open("r") as f:
+            config = yaml.safe_load(f)
+
+        return cls._from_dict(cls, config)
+
+    @classmethod
+    def _from_dict(cls, target_cls: Any, data: dict[str, Any]) -> "OptimizationConfig":
+        kwargs: dict[str, Any] = {}
+
+        for f in fields(target_cls):
+            # 1. Check directly if the key exists in the input data
+            if f.name in data:
+                val: Any = data[f.name]
+                # If target is a dataclass and value is a dict, parse recursively
+                if is_dataclass(f.type) and isinstance(val, dict):
+                    kwargs[f.name] = cls._from_dict(f.type, val)
+                else:
+                    kwargs[f.name] = val
+
+            # 2. Key missing in YAML, but has standard default
+            elif f.default is not MISSING:
+                kwargs[f.name] = f.default
+
+            # 3. Key missing in YAML, but has default_factory
+            elif f.default_factory is not MISSING:
+                factory_val: Any = f.default_factory()
+                if is_dataclass(factory_val):
+                    kwargs[f.name] = cls._from_dict(type(factory_val), {})
+                else:
+                    kwargs[f.name] = factory_val
+
+            # 4. Field missing and has no default
+            else:
+                raise ValueError(
+                    f"Missing required config field: '{f.name}' in {target_cls.__name__}"
+                )
+
+        return target_cls(**kwargs)
 
     def is_concretized(self) -> bool:
         """Return whether no nested configuration contains an automatic hint."""

@@ -151,7 +151,7 @@ def optimize_full_program_sdfg(
 
     if optimization_config is None:
         ndsl_log.debug(f"Using default optimization config for {parsed_sdfg.label}.")
-        optimization_config = OptimizationConfig()
+        optimization_config = OptimizationConfig.get_default()
     optimization_config.concretize(config.get_backend())
     ndsl_log.debug(f"Compiling config:\n{pformat(optimization_config, indent=2)}")
 
