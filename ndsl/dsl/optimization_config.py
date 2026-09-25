@@ -108,6 +108,13 @@ class OptimizationConfig:
     EXPERIMENTAL, therefore defaulting to False.
     """
 
+    loop_vectorization: bool = False
+    """
+    Series of transformed aimed at helping the generic compiler do auto-vectorization for AVX instructions.
+    Also contains some transient refinement
+    EXPERIMENTAL, therefore defaulting to False.
+    """
+
     gpu: GPU = field(default_factory=GPU)
     """GPU-only optimization options"""
 
