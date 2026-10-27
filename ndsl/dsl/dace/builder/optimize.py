@@ -26,6 +26,7 @@ from ndsl.dsl.dace.builder.sdfg.debug_passes import (
     sdfg_nan_checker,
 )
 from ndsl.dsl.dace.builder.stree import CPUPipeline, GPUPipeline, StreePipeline
+from ndsl.dsl.dace.builder.stree.optimizations.kernelize_maps import kernalize
 from ndsl.dsl.dace.dace_config import DaceConfig
 from ndsl.dsl.dace.hardware_config import get_gpu_hardware_defaults
 from ndsl.dsl.dace.utils import (
@@ -132,7 +133,7 @@ def _optimize_for_serial_cpu(
     #           workflow.
     try:
         from dace.transformation.passes import PredicateToIntegerArray
-    except ModuleNotFoundError:
+    except ImportError:
         ndsl_log.warning(
             "Schedule tree canonicalization passes are not available, "
             "serial CPU optimization skipped."
@@ -353,6 +354,13 @@ def optimize_full_program_sdfg(
             validate=False,
         )
 
+    # To avoid global sync in kernel, we always kernalize on GPU
+    if config.is_gpu_backend():
+        with DaCeProgress(mode, "GPU Kernalize"):
+            tree = parsed_sdfg.as_schedule_tree()
+            kernalize(tree, config.get_backend())
+            parsed_sdfg = tree.as_sdfg()
+
     # We want all maps properly collapse to make sure the codegen will see nD parallel
     # axis as a single kernelizable map
     with DaCeProgress(mode, "Collapse maps"):
@@ -457,7 +465,7 @@ def optimize_full_program_sdfg(
             "Stats on SDFG before compilation:\n"
             f"  Arrays: {len([name for _, name, _ in parsed_sdfg.arrays_recursive(include_nested_data=True)])}\n"
             f"  SDFGs : {len([sdfg for sdfg in parsed_sdfg.all_sdfgs_recursive()])}\n"
-            f"  States: {len(parsed_sdfg.states())}\n"
+            f"  States: {len([state for state in parsed_sdfg.states()])}\n"
             f"  CFGs  : {len([cfg for cfg in parsed_sdfg.all_control_flow_regions(recursive=True)])}\n"
         )
         parsed_sdfg.save("pre-compile.sdfgz", compress=True)
