@@ -1,10 +1,13 @@
 import pytest
 from dace import nodes
+from dace.sdfg.analysis.schedule_tree import treenodes as tn
 from dace.sdfg.state import LoopRegion
 
 from ndsl import Backend, NDSLRuntime, OptimizationConfig, orchestrate
 from ndsl.boilerplate import get_factories_single_tile
 from ndsl.constants import I_DIM, J_DIM, K_DIM
+from ndsl.dsl.dace.builder.stree.common import AxisIterator
+from ndsl.dsl.dace.builder.stree.optimizations.kernelize_maps import _KernelizeMap
 from ndsl.dsl.gt4py import BACKWARD, FORWARD, PARALLEL, computation, interval
 from ndsl.dsl.optimization_config import OptimizationOption
 from ndsl.dsl.stencil import StencilFactory
@@ -91,6 +94,33 @@ class OrchestratedCode(NDSLRuntime):
 
     def only_parallel_noop(self, in_field: FloatField, out_field: FloatField) -> None:  # type: ignore
         self._stencil_only_parallel_noop(in_field, out_field)
+
+
+def test_kernelize_map_preserves_trailing_children() -> None:
+    map_j = tn.MapScope(
+        node=nodes.MapEntry(nodes.Map("map_j", ["__j"], [(0, 3, 1)])), children=[]
+    )
+    map_k = tn.MapScope(
+        node=nodes.MapEntry(nodes.Map("map_k", ["__k"], [(0, 3, 1)])), children=[]
+    )
+    trailing_map = tn.MapScope(
+        node=nodes.MapEntry(nodes.Map("map_other", ["__other"], [(0, 3, 1)])),
+        children=[],
+    )
+    map_i = tn.MapScope(
+        node=nodes.MapEntry(nodes.Map("map_i", ["__i"], [(0, 3, 1)])),
+        children=[map_j, map_k, trailing_map],
+    )
+
+    kernelized_maps = _KernelizeMap(AxisIterator._I).visit_MapScope(map_i)
+
+    assert isinstance(kernelized_maps, list)
+    assert len(kernelized_maps) == 2
+    assert kernelized_maps[0].children == [map_j]
+    assert kernelized_maps[1].children == [map_k, trailing_map]
+    assert map_j.parent is kernelized_maps[0]
+    assert map_k.parent is kernelized_maps[1]
+    assert trailing_map.parent is kernelized_maps[1]
 
 
 class TestKernelizeMaps:

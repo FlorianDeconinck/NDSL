@@ -41,16 +41,24 @@ class _KernelizeMap(tn.ScheduleNodeTransformer):
                 if isinstance(child, (tn.MapScope, tn.ForScope)) and is_cartesian_loop(
                     child
                 ):
-                    kernelized_maps.append(
-                        tn.MapScope(
-                            node=deepcopy(node.node),
-                            children=[child for child in current_children],
-                            parent=node.parent,
-                            state=node.state,
-                        )
+                    kernelized_map = tn.MapScope(
+                        node=deepcopy(node.node),
+                        children=[child for child in current_children],
+                        parent=node.parent,
+                        state=node.state,
                     )
+                    for kernelized_child in current_children:
+                        kernelized_child.parent = kernelized_map
+                    kernelized_maps.append(kernelized_map)
                     current_children = []
                     self._kernalized_cartesian_blocks += 1
+
+            if current_children:
+                last_kernelized_map = kernelized_maps[-1]
+                last_kernelized_map.children.extend(current_children)
+                for kernelized_child in current_children:
+                    kernelized_child.parent = last_kernelized_map
+
             return kernelized_maps
 
         return self.generic_visit(node)
