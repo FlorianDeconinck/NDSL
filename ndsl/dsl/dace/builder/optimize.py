@@ -146,7 +146,7 @@ def _optimize_for_serial_cpu(
         config.get_orchestrate(),
         "Apply canonicalization and massage loop for vectorization",
     ):
-        pipeline = [
+        pipeline_V3 = [
             # Turn all maps to loops
             ("toloops", passes.convert_map_to_loop),
             # Temporaries: fuse vertical loops that share them, then shrink them (before splitting separates iterations)
@@ -194,7 +194,45 @@ def _optimize_for_serial_cpu(
                 ),
             ),
         ]
-        for name, apply in pipeline:
+
+        pipeline_V4 = [
+            # Turn all maps to loops
+            ("toloops", passes.convert_map_to_loop),
+            # Work that every iteration of a loop repeats runs once before it (e.g., per-tracer copies of the same values)
+            ('hoistinv', passes.hoist_invariant_statements),
+            # Temporaries: fuse vertical loops that share them, then shrink them (before splitting separates iterations)
+            ('fusion', lambda t: passes.fuse_loops_for_reuse(t, cache_bytes=256 * 1024, min_trip_count=2)),
+            ('fusemove', lambda t: passes.move_loops_to_fuse(t, cache_bytes=256 * 1024, min_trip_count=2)),
+            ('refine', passes.refine_loop_local_transients),
+            # Guard cleanup
+            ('pair', passes.pair_complementary_guards),
+            ('forward', passes.forward_substitute_conditions),
+            ('deadassign', passes.remove_dead_assignments),
+            ('fold', passes.fold_guards),
+            ('unswitch', passes.unswitch_invariant_guards),
+            ('split', passes.split_iteration_spaces),
+            ('selects', passes.convert_diamonds_to_selects),
+            ('deadstores', passes.remove_dead_stores),
+            ('merge', passes.merge_contiguous_loops),
+            ('reroll', passes.reroll_statements),
+            ('fuserolled', passes.fuse_rolled_loops),
+            ('hoist', passes.hoist_select_arms),
+            # Rarely true guards (before hoist_condition_reads, which adds unguarded statements before conditions)
+            ('sink', passes.sink_into_guards),
+            ('move', passes.move_statements_to_readers),  # Past nests that keep statements from their readers' guards
+            ('sink2', passes.sink_into_guards),
+            ('coarsen', passes.coarsen_guards),
+            # Skip resets of containers nothing wrote since they were last reset (before reuse, which would share them)
+            ('resets', passes.skip_redundant_resets),
+            # Conditions read transient arrays through memlets, so that the memory passes see those reads
+            ('hoistcond', passes.hoist_condition_reads),
+            # Memory: share slots between temporaries, then put small ones on the stack
+            ('reuse', passes.reuse_transients),
+            ('stack', lambda t: passes.move_small_transients_to_stack(
+                t, max_array_bytes=4096, max_total_bytes=128 * 1024, zero_read_before_written=True)),
+        ]
+
+        for name, apply in pipeline_V4:
             r = apply(stree)
             ndsl_log.debug(f"{name}: {r}")
 
@@ -457,7 +495,7 @@ def optimize_full_program_sdfg(
             "Stats on SDFG before compilation:\n"
             f"  Arrays: {len([name for _, name, _ in parsed_sdfg.arrays_recursive(include_nested_data=True)])}\n"
             f"  SDFGs : {len([sdfg for sdfg in parsed_sdfg.all_sdfgs_recursive()])}\n"
-            f"  States: {len(parsed_sdfg.states())}\n"
+            f"  States: {len([sdfg for sdfg in parsed_sdfg.states()])}\n"
             f"  CFGs  : {len([cfg for cfg in parsed_sdfg.all_control_flow_regions(recursive=True)])}\n"
         )
         parsed_sdfg.save("pre-compile.sdfgz", compress=True)
