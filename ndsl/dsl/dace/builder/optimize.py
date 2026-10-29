@@ -14,14 +14,12 @@ from dace.sdfg.analysis.schedule_tree import passes
 from dace.sdfg.analysis.schedule_tree import treenodes as tn
 from dace.sdfg.utils import fuse_states, inline_sdfgs
 from dace.transformation.auto.auto_optimize import make_transients_persistent
-from dace.transformation.dataflow.add_threadblock_map import AddThreadBlockMap
 from dace.transformation.helpers import get_parent_map
 
 import ndsl.dsl.dace.builder.stree.optimizations as ndsl_passes
 from ndsl import OptimizationConfig, ndsl_log
 from ndsl.dsl.dace.builder.cache import BuildInfo
 from ndsl.dsl.dace.dace_config import DaceConfig
-from ndsl.dsl.dace.hardware_config import get_gpu_hardware_defaults
 from ndsl.dsl.dace.utils import (
     DaCeProgress,
     memory_static_analysis,
@@ -225,6 +223,7 @@ def _optimize_for_gpu(
     sdfg: SDFG,
     device_type: DaceDeviceType,
     validate: bool = True,
+    maximize_no_conditional_code=True,
 ) -> SDFG:
     """Default optimization pipeline for GPU:
     - Maximize the 3D kernel coverage
@@ -256,6 +255,30 @@ def _optimize_for_gpu(
             ),
             ("collaps_maps", ndsl_passes.collapse_maps),
         ]
+        if maximize_no_conditional_code:
+            pipeline = [
+                # Expand maps to help the transform afterward
+                (
+                    "expand_maps",
+                    lambda t: ndsl_passes.expand_maps(t, inner_schedule=inner_schedule),
+                ),
+                # Attempt to hoist conditional out of maps
+                ("fold", passes.fold_guards),
+                ("unswitch", passes.unswitch_invariant_guards),
+                # Make best kernels
+                ("split", passes.split_iteration_spaces),
+                ("merge", passes.merge_contiguous_loops),
+                (
+                    "kernalize",
+                    lambda t: ndsl_passes.kernalize(
+                        t, backend=dace_config.get_backend()
+                    ),
+                ),  # To avoid global sync in kernel, we always kernalize on GPU
+                # Memory: share slots between temporaries, then put small ones on the stack
+                ("reuse", passes.reuse_transients),
+                # Make 3D kernels
+                ("collaps_maps", ndsl_passes.collapse_maps),
+            ]
         for name, apply in pipeline:
             r = apply(stree)
             ndsl_log.debug(f"{name}: {r}")
@@ -340,9 +363,7 @@ def _prepare_sdfg(config: DaceConfig, sdfg: SDFG, device_type: DaceDeviceType):
             )
 
     if config.is_gpu_backend():
-        with DaCeProgress(
-            config.get_orchestrate(), "configure maps to run on GPU"
-        ):
+        with DaCeProgress(config.get_orchestrate(), "configure maps to run on GPU"):
             for this_sdfg in sdfg.all_sdfgs_recursive():
                 for state in this_sdfg.states():
                     for node in state.nodes():
@@ -352,9 +373,7 @@ def _prepare_sdfg(config: DaceConfig, sdfg: SDFG, device_type: DaceDeviceType):
                         ):
                             node.schedule = ScheduleType.GPU_Device
 
-    with DaCeProgress(
-        config.get_orchestrate(), "make residency of memory leaner"
-    ):
+    with DaCeProgress(config.get_orchestrate(), "make residency of memory leaner"):
         # - Scalar are registers
         # - Transient are persistent (cache miss but not runtime reallocation)
         for _sd, _aname, arr in sdfg.arrays_recursive():
@@ -452,6 +471,7 @@ def optimize_full_program_sdfg(
                 parsed_sdfg,
                 device_type,
                 validate=False,
+                maximize_no_conditional_code=True,
             )
 
     # Clean up and compile the SDFG (also additional feedback to the user)
