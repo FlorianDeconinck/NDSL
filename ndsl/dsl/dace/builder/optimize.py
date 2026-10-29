@@ -267,7 +267,7 @@ def _optimize_for_gpu(
                 ("unswitch", passes.unswitch_invariant_guards),
                 # Make best kernels
                 ("split", passes.split_iteration_spaces),
-                ("merge", passes.merge_contiguous_loops),
+                # ("merge", passes.merge_contiguous_loops),
                 (
                     "kernalize",
                     lambda t: ndsl_passes.kernalize(
