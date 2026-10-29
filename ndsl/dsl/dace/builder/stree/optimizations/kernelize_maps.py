@@ -2,7 +2,6 @@ from copy import deepcopy
 
 from dace.sdfg.analysis.schedule_tree import treenodes as tn
 
-from ndsl import Backend, ndsl_log
 from ndsl.config import BackendLoopOrder
 from ndsl.dsl.dace.builder.stree.common import (
     AxisIterator,
@@ -61,7 +60,7 @@ class KernelizeMaps(tn.ScheduleNodeVisitor):
         super().__init__()
         self._backend = backend
         self._apply_order = apply_order
-        self._rekernel_per_axis = [0, 0, 0]
+        self.rekernel_per_axis = [0, 0, 0]
 
     def __str__(self) -> str:
         return "KernelizeMaps"
@@ -70,16 +69,9 @@ class KernelizeMaps(tn.ScheduleNodeVisitor):
         for axis in self._axis_order():
             kernalized_map = _KernelizeMap(axis)
             kernalized_map.visit(node)
-            self._rekernel_per_axis[axis.as_cartesian_index()] = (
+            self.rekernel_per_axis[axis.as_cartesian_index()] = (
                 kernalized_map._kernalized_cartesian_blocks
             )
-
-        ndsl_log.debug(
-            "🚀 (re)Kernalize "
-            f"I: {self._rekernel_per_axis[AxisIterator._I.as_cartesian_index()]} "
-            f"J: {self._rekernel_per_axis[AxisIterator._J.as_cartesian_index()]} "
-            f"K: {self._rekernel_per_axis[AxisIterator._K.as_cartesian_index()]} "
-        )
 
     def _axis_order(self) -> list[AxisIterator]:
         if self._apply_order == "default":
@@ -112,5 +104,7 @@ class KernelizeMaps(tn.ScheduleNodeVisitor):
         )
 
 
-def kernalize(stree: tn.ScheduleTreeRoot, backend: Backend) -> None:
-    KernelizeMaps(backend).visit(stree)
+def kernalize(stree: tn.ScheduleTreeRoot, backend: Backend) -> list[int]:
+    visitor = KernelizeMaps(backend)
+    visitor.visit(stree)
+    return visitor.rekernel_per_axis
