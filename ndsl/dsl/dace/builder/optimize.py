@@ -14,29 +14,19 @@ from dace.sdfg.analysis.schedule_tree import passes
 from dace.sdfg.analysis.schedule_tree import treenodes as tn
 from dace.sdfg.utils import fuse_states, inline_sdfgs
 from dace.transformation.auto.auto_optimize import make_transients_persistent
-from dace.transformation.dataflow import MapCollapse, MapExpansion
 from dace.transformation.dataflow.add_threadblock_map import AddThreadBlockMap
 from dace.transformation.helpers import get_parent_map
 
-from ndsl import Backend, OptimizationConfig, ndsl_log
+import ndsl.dsl.dace.builder.stree.optimizations as ndsl_passes
+from ndsl import OptimizationConfig, ndsl_log
 from ndsl.dsl.dace.builder.cache import BuildInfo
-from ndsl.dsl.dace.builder.sdfg.debug_passes import (
-    negative_delp_checker,
-    negative_qtracers_checker,
-    sdfg_nan_checker,
-)
-from ndsl.dsl.dace.builder.stree import CPUPipeline, GPUPipeline, StreePipeline
-from ndsl.dsl.dace.builder.stree.optimizations.kernelize_maps import kernalize
 from ndsl.dsl.dace.dace_config import DaceConfig
 from ndsl.dsl.dace.hardware_config import get_gpu_hardware_defaults
 from ndsl.dsl.dace.utils import (
     DaCeProgress,
     memory_static_analysis,
     report_memory_static_analysis,
-    upload_to_device,
 )
-
-_INTERNAL__SCHEDULE_TREE_OPTIMIZATION_PASSES: list[tn.ScheduleNodeVisitor] | None = None
 
 
 def _to_gpu(sdfg: SDFG) -> None:
@@ -112,6 +102,7 @@ def _tree_as_sdfg(stree: tn.ScheduleTreeRoot) -> SDFG:
 def _optimize_for_serial_cpu(
     config: DaceConfig,
     sdfg: SDFG,
+    device_type: DaceDeviceType,
     validate: bool = True,
 ) -> SDFG:
     """
@@ -145,11 +136,29 @@ def _optimize_for_serial_cpu(
 
     with DaCeProgress(
         config.get_orchestrate(),
+        "Prepare tree for serial CPU optimziation",
+    ):
+        inner_schedule = (
+            ScheduleType.GPU_Device
+            if device_type is DeviceType.GPU
+            else ScheduleType.Default
+        )
+        pipeline = [
+            (
+                "expand_maps",
+                lambda t: ndsl_passes.expand_maps(t, inner_schedule=inner_schedule),
+            ),
+            ("toloops", passes.convert_map_to_loop),
+        ]
+        for name, apply in pipeline:
+            r = apply(stree)
+            ndsl_log.debug(f"{name}: {r}")
+
+    with DaCeProgress(
+        config.get_orchestrate(),
         "Apply canonicalization and massage loop for vectorization",
     ):
         pipeline = [
-            # Turn all maps to loops
-            ("toloops", passes.convert_map_to_loop),
             # Temporaries: fuse vertical loops that share them, then shrink them (before splitting separates iterations)
             (
                 "fusion",
@@ -211,27 +220,194 @@ def _optimize_for_serial_cpu(
     return result
 
 
-def _optimization_pipeline(
-    config: OptimizationConfig,
-    device_type: DeviceType,
-    backend: Backend,
-    *,
-    passes: list[tn.ScheduleNodeVisitor] | None = None,
-    cache_directory: Path | None = None,
-) -> StreePipeline:
-    if device_type == DeviceType.CPU:
-        return CPUPipeline(
-            config, backend, passes=passes, cache_directory=cache_directory
-        )
+def _optimize_for_gpu(
+    dace_config: DaceConfig,
+    sdfg: SDFG,
+    device_type: DaceDeviceType,
+    validate: bool = True,
+) -> SDFG:
+    """Default optimization pipeline for GPU:
+    - Maximize the 3D kernel coverage
+    - Add thread/blocks configuration by reading the hardware
+    - Move persistent memory into a memory pool
+    """
 
-    if device_type == DeviceType.GPU:
-        return GPUPipeline(
-            config, backend, passes=passes, cache_directory=cache_directory
-        )
+    with DaCeProgress(dace_config.get_orchestrate(), "Go to schedule tree"):
+        stree = sdfg.as_schedule_tree()
 
-    raise ValueError(
-        f"Unknown device type `{device_type}`, expected {DeviceType.CPU} or {DeviceType.GPU}."
+    with DaCeProgress(
+        dace_config.get_orchestrate(),
+        "Maximize kernel coverage",
+    ):
+        inner_schedule = (
+            ScheduleType.GPU_Device
+            if device_type is DeviceType.GPU
+            else ScheduleType.Default
+        )
+        pipeline = [
+            (
+                "expand_maps",
+                lambda t: ndsl_passes.expand_maps(t, inner_schedule=inner_schedule),
+            ),
+            # To avoid global sync in kernel, we always kernalize on GPU
+            (
+                "kernalize",
+                lambda t: ndsl_passes.kernalize(t, backend=dace_config.get_backend()),
+            ),
+            ("collaps_maps", ndsl_passes.collapse_maps),
+        ]
+        for name, apply in pipeline:
+            r = apply(stree)
+            ndsl_log.debug(f"{name}: {r}")
+
+    with DaCeProgress(dace_config.get_orchestrate(), "Go back to SDFG"):
+        result_sdfg = stree.as_sdfg(validate=False, simplify=False)
+
+    with DaCeProgress(
+        dace_config.get_orchestrate(), "Make residency of GPU memory correct & leaner"
+    ):
+        # Make the transients array persistents
+        _to_gpu(result_sdfg)
+        make_transients_persistent(sdfg=result_sdfg, device=device_type)
+
+    # Set block size on GPU maps and collect callback
+    # tasklets to exclude next
+    gpu_defaults = get_gpu_hardware_defaults()
+    exclude_tasklets_list = []
+    for me, _state in result_sdfg.all_nodes_recursive():
+        if (
+            isinstance(me, nodes.MapEntry)
+            and me.map.schedule == ScheduleType.GPU_Device
+        ) and me.map.gpu_block_size is None:
+            me.map.gpu_block_size = gpu_defaults.block_size
+
+        if isinstance(me, nodes.Tasklet) and "callback_" in me.label:
+            exclude_tasklets_list.append(me.label)
+
+    result_sdfg.apply_transformations_repeated(
+        AddThreadBlockMap, print_report=False, validate=False
     )
+
+    # Pool memory using the cuda-given pool
+    with DaCeProgress(
+        dace_config.get_orchestrate(), "Turn Persistents into pooled Scope"
+    ):
+        memory_pooled = 0.0
+        for _sd, _aname, arr in result_sdfg.arrays_recursive():
+            # Change Persistent memory (sub-SDFG) into Scope and flag it.
+            if arr.lifetime == dtypes.AllocationLifetime.Persistent:
+                arr.pool = True
+                memory_pooled += arr.total_size * arr.dtype.bytes
+                arr.lifetime = dtypes.AllocationLifetime.Scope
+        memory_pooled = float(memory_pooled) / (1024 * 1024)
+        ndsl_log.debug(f"Pooled {memory_pooled:.2f} mb")
+
+    if validate:
+        with DaCeProgress(dace_config.get_orchestrate(), "Validate"):
+            result_sdfg.validate()
+
+    return result_sdfg
+
+
+def _prepare_sdfg(config: DaceConfig, sdfg: SDFG, device_type: DaceDeviceType):
+    """Mandatory clean up and specialization of the SDFG to get it ready for further optimization:
+    - Specialize remaining symbols
+    - [GPU Only] Swap schedule to GPU_Device on parallel maps
+    - Default memory residency to optimize space for runtime without checking usage
+    - NDSL's restricted simplify
+
+    SDFG is modified in-place.
+    """
+
+    # Fully specialize all known symbols and then propagate these changes in the simplify
+    # pass that follows. This is not only a smart idea in general, but also simplifies (haha)
+    # the schedule tree (optimization) roundtrip.
+    with DaCeProgress(
+        config.get_orchestrate(), "Prepare SDFG: fully specialize symbols"
+    ):
+        for my_sdfg in sdfg.all_sdfgs_recursive():
+            if my_sdfg.parent_nsdfg_node is not None:
+                repl_dict: dict[str, str] = {}
+                for sym, val in my_sdfg.parent_nsdfg_node.symbol_mapping.items():
+                    if isinstance(val, numbers.Number):
+                        repl_dict[sym] = str(val)
+                my_sdfg.replace_dict(repl_dict)
+
+        if config.verbose_orchestration:
+            ndsl_log.debug("Saving parsed_sdfg.sdfgz")
+            sdfg.save(
+                os.path.abspath(f"{sdfg.build_folder}/parsed_sdfg.sdfgz"),
+                compress=True,
+            )
+
+    if config.is_gpu_backend():
+        with DaCeProgress(
+            config.get_orchestrate(), "Prepare SDFG: configure maps to run on GPU"
+        ):
+            for this_sdfg in sdfg.all_sdfgs_recursive():
+                for state in this_sdfg.states():
+                    for node in state.nodes():
+                        if (
+                            isinstance(node, nodes.EntryNode)
+                            and node.schedule != ScheduleType.Sequential
+                        ):
+                            node.schedule = ScheduleType.GPU_Device
+
+    with DaCeProgress(
+        config.get_orchestrate(), "Prepare SDFG: Make residency of memory leaner"
+    ):
+        # - Scalar are registers
+        # - Transient are persistent (cache miss but not runtime reallocation)
+        for _sd, _aname, arr in sdfg.arrays_recursive():
+            if arr.shape == (1,):
+                arr.storage = DaceStorageType.Register
+        make_transients_persistent(sdfg=sdfg, device=device_type)
+
+    with DaCeProgress(config.get_orchestrate(), "Prepare SDFG: simplify"):
+        _simplify(sdfg)
+
+
+def _compile(dace_config: DaceConfig, sdfg: SDFG) -> CompiledSDFG:
+    """Compile the SDFG into a CompiledSDFG. First clean up the states and nested sdfgs, report statistics
+    on the SDFG and memory.
+    """
+
+    # Clean up SDFG
+    with DaCeProgress(dace_config.get_orchestrate(), "Inline SDFGs & Fuse states"):
+        ctr_sdfg = inline_sdfgs(sdfg)
+        ctr_state = fuse_states(sdfg)
+        ndsl_log.debug(f"Inline SDFGs | Fuse states counts: {ctr_sdfg} | {ctr_state}")
+
+    # Compile
+    with DaCeProgress(dace_config.get_orchestrate(), "Codegen & compile"):
+        ndsl_log.debug(
+            "Stats on SDFG before compilation:\n"
+            f"  Arrays: {len([name for _, name, _ in sdfg.arrays_recursive(include_nested_data=True)])}\n"
+            f"  SDFGs : {len([sdfg for sdfg in sdfg.all_sdfgs_recursive()])}\n"
+            f"  States: {len([state for state in sdfg.states()])}\n"
+            f"  CFGs  : {len([cfg for cfg in sdfg.all_control_flow_regions(recursive=True)])}\n"
+        )
+        compiled_sdfg = sdfg.compile()
+
+    # Printing analysis of the compiled SDFG
+    with DaCeProgress(
+        dace_config.get_orchestrate(), "Build finished. Running memory static analysis"
+    ):
+        report = report_memory_static_analysis(
+            sdfg, memory_static_analysis(sdfg), False
+        )
+        ndsl_log.info(report)
+
+    # Store build info in the common cache directory
+    BuildInfo.save(
+        sdfg,
+        dace_config.layout,
+        dace_config.tile_resolution,
+        report,
+        dace_config.get_backend(),
+    )
+
+    return compiled_sdfg
 
 
 def optimize_full_program_sdfg(
@@ -244,244 +420,40 @@ def optimize_full_program_sdfg(
     """Optimize and compile the SDFG (creating the .dacecache and with the source and dynamic library)
     from a parsed SDFG (e.g. python code + gt4py stencils).
     """
-
     device_type = DaceDeviceType.GPU if config.is_gpu_backend() else DaceDeviceType.CPU
-    mode = config.get_orchestrate()
 
     # Enforce cache directory made so all downstream caching file
     # won't hit an non existing directory
     Path(parsed_sdfg.build_folder).mkdir(parents=True, exist_ok=True)
 
+    # Resolve optimization configuration
     if optimization_config is None:
         ndsl_log.debug(f"Using default optimization config for {parsed_sdfg.label}.")
         optimization_config = OptimizationConfig.get_default()
     optimization_config.concretize(config.get_backend())
     ndsl_log.debug(f"Compiling config:\n{pformat(optimization_config, indent=2)}")
 
-    # Fully specialize all known symbols and then propagate these changes in the simplify
-    # pass that follows. This is not only a smart idea in general, but also simplifies (haha)
-    # the schedule tree (optimization) roundtrip.
-    with DaCeProgress(mode, "Fully specialize symbols"):
-        for my_sdfg in parsed_sdfg.all_sdfgs_recursive():
-            if my_sdfg.parent_nsdfg_node is not None:
-                repl_dict: dict[str, str] = {}
-                for sym, val in my_sdfg.parent_nsdfg_node.symbol_mapping.items():
-                    if isinstance(val, numbers.Number):
-                        repl_dict[sym] = str(val)
-                my_sdfg.replace_dict(repl_dict)
+    # Clean up and prepare SDFG for optimization
+    _prepare_sdfg(config, parsed_sdfg, device_type)
 
-        if config.verbose_orchestration:
-            ndsl_log.debug("Saving parsed_sdfg.sdfgz")
-            parsed_sdfg.save(
-                os.path.abspath(f"{parsed_sdfg.build_folder}/parsed_sdfg.sdfgz"),
-                compress=True,
-            )
-
-    if config.is_gpu_backend():
-        with DaCeProgress(mode, "Configure maps to run on GPU"):
-            for this_sdfg in parsed_sdfg.all_sdfgs_recursive():
-                for state in this_sdfg.states():
-                    for node in state.nodes():
-                        if (
-                            isinstance(node, nodes.EntryNode)
-                            and node.schedule != ScheduleType.Sequential
-                        ):
-                            node.schedule = ScheduleType.GPU_Device
-
-    with DaCeProgress(mode, "Simplify (1)"):
-        _simplify(parsed_sdfg)
-        if config.verbose_orchestration:
-            ndsl_log.debug("saving 01-simplify.sdfgz")
-            parsed_sdfg.save(
-                os.path.abspath(f"{parsed_sdfg.build_folder}/01-simplify_1.sdfgz"),
-                compress=True,
-            )
-
-    with DaCeProgress(mode, "Expand maps"):
-        parsed_sdfg.apply_transformations_repeated(
-            MapExpansion,
-            options={
-                "inner_schedule": (
-                    ScheduleType.GPU_Device
-                    if device_type is DeviceType.GPU
-                    else ScheduleType.Default
-                )
-            },
-            validate=False,
-            print_report=False,
-        )
-
-    with DaCeProgress(mode, "Make residency of memory leaner"):
-        # - Scalar are registers
-        # - Transient are persistent (cache miss but not runtime reallocation)
-        for _sd, _aname, arr in parsed_sdfg.arrays_recursive():
-            if arr.shape == (1,):
-                arr.storage = DaceStorageType.Register
-        make_transients_persistent(sdfg=parsed_sdfg, device=device_type)
-
-    if optimization_config.stree.enabled:
-        # Here be 🐉 - but tests exists in test_optimization.py
-        with DaCeProgress(mode, "Schedule Tree: generate from SDFG"):
-            # Break all loops into uni-dimensional loops to simplify optimizations
-            stree = parsed_sdfg.as_schedule_tree()
-
-        with DaCeProgress(mode, "Schedule Tree: optimization"):
-            pipeline = _optimization_pipeline(
-                optimization_config,
-                device_type,
-                config.get_backend(),
-                cache_directory=Path(parsed_sdfg.build_folder),
-                passes=_INTERNAL__SCHEDULE_TREE_OPTIMIZATION_PASSES,
-            )
-            pipeline.run(stree, verbose=config.verbose_schedule_tree_optimizations)
-
-        with DaCeProgress(mode, "Schedule Tree: go back to SDFG"):
-            parsed_sdfg = _tree_as_sdfg(stree)
-            if config.verbose_orchestration:
-                ndsl_log.debug("saving 04-from_stree.sdfgz")
-                parsed_sdfg.save(
-                    os.path.abspath(f"{parsed_sdfg.build_folder}/04-from_stree.sdfgz"),
-                    compress=True,
-                )
-
-        with DaCeProgress(mode, "Simplify (post-stree conversion)"):
-            _simplify(parsed_sdfg)
-
+    # Core optimization pipelines
     if optimization_config.serial_cpu_vectorization:
         parsed_sdfg = _optimize_for_serial_cpu(
             config,
             parsed_sdfg,
+            device_type,
+            validate=False,
+        )
+    elif config.is_gpu_backend():
+        parsed_sdfg = _optimize_for_gpu(
+            config,
+            parsed_sdfg,
+            device_type,
             validate=False,
         )
 
-    # To avoid global sync in kernel, we always kernalize on GPU
-    if config.is_gpu_backend():
-        with DaCeProgress(mode, "GPU Kernalize"):
-            tree = parsed_sdfg.as_schedule_tree()
-            kernalize(tree, config.get_backend())
-            parsed_sdfg = tree.as_sdfg()
-
-    # We want all maps properly collapse to make sure the codegen will see nD parallel
-    # axis as a single kernelizable map
-    with DaCeProgress(mode, "Collapse maps"):
-        # permissive: allow `MapCollapse` to collapse maps with different schedules
-        # progress: do not print intermediate transformations applied
-        # validate: do not validate after applying all transformations
-        parsed_sdfg.apply_transformations_repeated(
-            MapCollapse, permissive=True, progress=False, validate=False
-        )
-
-    if config.is_gpu_backend():
-        with DaCeProgress(mode, "Make residency of GPU memory correct & leaner"):
-            # Make the transients array persistents
-            _to_gpu(parsed_sdfg)
-            make_transients_persistent(sdfg=parsed_sdfg, device=device_type)
-
-            # Upload args to device
-            upload_to_device(list(args) + list(kwargs.values()))
-
-    if config.is_gpu_backend():
-        with DaCeProgress(mode, "Apply GPU transformations"):
-            # Set block size on GPU maps and collect callback
-            # tasklets to exclude next
-            gpu_defaults = get_gpu_hardware_defaults()
-            exclude_tasklets_list = []
-
-            for me, _state in parsed_sdfg.all_nodes_recursive():
-                if (
-                    isinstance(me, nodes.MapEntry)
-                    and me.map.schedule == ScheduleType.GPU_Device
-                ) and me.map.gpu_block_size is None:
-                    me.map.gpu_block_size = gpu_defaults.block_size
-
-                if isinstance(me, nodes.Tasklet) and "callback_" in me.label:
-                    exclude_tasklets_list.append(me.label)
-
-            parsed_sdfg.apply_transformations_repeated(
-                AddThreadBlockMap, print_report=False, validate=False
-            )
-
-            if optimization_config.gpu.common_gpu_xforms:
-                with DaCeProgress(mode, "Apply common GPU xforms"):
-                    # Apply common GPU transforms (includes a simplify)
-                    # while making sure tasklet remain on the host
-                    from dace.transformation.interstate import GPUTransformSDFG
-
-                    parsed_sdfg.apply_transformations(
-                        GPUTransformSDFG,
-                        options={
-                            "exclude_tasklets": ",".join(exclude_tasklets_list),
-                            "host_data": ["__pystate"],
-                        },
-                        validate=False,
-                    )
-            else:
-                with DaCeProgress(mode, "GPU simplify"):
-                    _simplify(parsed_sdfg)
-
-            if config.verbose_orchestration:
-                ndsl_log.debug("saving 05-apply_gpu_xforms.sdfgz")
-                parsed_sdfg.save(
-                    os.path.abspath(
-                        f"{parsed_sdfg.build_folder}/05-apply_gpu_xforms.sdfgz"
-                    ),
-                    compress=True,
-                )
-
-    with DaCeProgress(mode, "Inline SDFGs & Fuse states"):
-        ctr_sdfg = inline_sdfgs(parsed_sdfg)
-        ctr_state = fuse_states(parsed_sdfg)
-        ndsl_log.debug(f"Inline SDFGs | Fuse states counts: {ctr_sdfg} | {ctr_state}")
-
-    # Move all memory that can be into a pool to lower memory pressure for GPU
-    # We skip this memory optimization for CPU because we don't have a memory
-    # pool available yet (DaCe v1)
-
-    if config.is_gpu_backend():
-        with DaCeProgress(mode, "Turn Persistents into pooled Scope"):
-            memory_pooled = 0.0
-            for _sd, _aname, arr in parsed_sdfg.arrays_recursive():
-                # Change Persistent memory (sub-SDFG) into Scope and flag it.
-                if arr.lifetime == dtypes.AllocationLifetime.Persistent:
-                    arr.pool = True
-                    memory_pooled += arr.total_size * arr.dtype.bytes
-                    arr.lifetime = dtypes.AllocationLifetime.Scope
-            memory_pooled = float(memory_pooled) / (1024 * 1024)
-            ndsl_log.debug(
-                f"{DaCeProgress.default_prefix(mode)} Pooled {memory_pooled:.2f} mb",
-            )
-
-    # Set of debug tools inserted in the SDFG when dace.conf "syncdebug"
-    # is turned on.
-    if config.get_sync_debug():
-        with DaCeProgress(mode, "Tooling the SDFG for debug"):
-            sdfg_nan_checker(parsed_sdfg)
-            negative_delp_checker(parsed_sdfg)
-            negative_qtracers_checker(parsed_sdfg)
-
-    # Compile
-    with DaCeProgress(mode, "Codegen & compile"):
-        ndsl_log.debug(
-            "Stats on SDFG before compilation:\n"
-            f"  Arrays: {len([name for _, name, _ in parsed_sdfg.arrays_recursive(include_nested_data=True)])}\n"
-            f"  SDFGs : {len([sdfg for sdfg in parsed_sdfg.all_sdfgs_recursive()])}\n"
-            f"  States: {len([state for state in parsed_sdfg.states()])}\n"
-            f"  CFGs  : {len([cfg for cfg in parsed_sdfg.all_control_flow_regions(recursive=True)])}\n"
-        )
-        parsed_sdfg.save("pre-compile.sdfgz", compress=True)
-        compiled_sdfg = parsed_sdfg.compile()
-
-    # Printing analysis of the compiled SDFG
-    with DaCeProgress(mode, "Build finished. Running memory static analysis"):
-        report = report_memory_static_analysis(
-            parsed_sdfg, memory_static_analysis(parsed_sdfg), False
-        )
-        ndsl_log.info(f"{DaCeProgress.default_prefix(mode)} {report}")
-
-    # Store build info in the common cache directory
-    BuildInfo.save(
-        parsed_sdfg, config.layout, config.tile_resolution, report, config.get_backend()
-    )
+    # Clean up and compile the SDFG (also additional feedback to the user)
+    compiled_sdfg = _compile(config, parsed_sdfg)
 
     # The full process of orchestration and compile is very memory hungry, since we are about to
     # begin runtime execution in earnest, let's give python a beat to clean up
