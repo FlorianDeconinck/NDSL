@@ -354,7 +354,7 @@ def _prepare_sdfg(config: DaceConfig, sdfg: SDFG, device_type: DaceDeviceType):
                             node.schedule = ScheduleType.GPU_Device
 
     with DaCeProgress(
-        config.get_orchestrate(), "Prepare SDFG: Make residency of memory leaner"
+        config.get_orchestrate(), "Prepare SDFG: make residency of memory leaner"
     ):
         # - Scalar are registers
         # - Transient are persistent (cache miss but not runtime reallocation)

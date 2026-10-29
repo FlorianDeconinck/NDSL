@@ -2,7 +2,7 @@ from copy import deepcopy
 
 from dace.sdfg.analysis.schedule_tree import treenodes as tn
 
-from ndsl.config import BackendLoopOrder
+from ndsl.config import Backend, BackendLoopOrder
 from ndsl.dsl.dace.builder.stree.common import (
     AxisIterator,
     is_axis_map,
