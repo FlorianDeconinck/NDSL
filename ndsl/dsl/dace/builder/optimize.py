@@ -270,23 +270,24 @@ def _optimize_for_gpu(
         _to_gpu(result_sdfg)
         make_transients_persistent(sdfg=result_sdfg, device=device_type)
 
-    # Set block size on GPU maps and collect callback
-    # tasklets to exclude next
-    gpu_defaults = get_gpu_hardware_defaults()
-    exclude_tasklets_list = []
-    for me, _state in result_sdfg.all_nodes_recursive():
-        if (
-            isinstance(me, nodes.MapEntry)
-            and me.map.schedule == ScheduleType.GPU_Device
-        ) and me.map.gpu_block_size is None:
-            me.map.gpu_block_size = gpu_defaults.block_size
+    # TODO: this is the correct pattern but somehow it fails on HPC because of the parsing
+    #       of CopyCorners - we rely on the default...
+    # Set block size on GPU maps and collect callback tasklets to exclude next
+    # gpu_defaults = get_gpu_hardware_defaults()
+    # exclude_tasklets_list = []
+    # for me, _state in result_sdfg.all_nodes_recursive():
+    #     if (
+    #         isinstance(me, nodes.MapEntry)
+    #         and me.map.schedule == ScheduleType.GPU_Device
+    #     ) and me.map.gpu_block_size is None:
+    #         me.map.gpu_block_size = gpu_defaults.block_size
 
-        if isinstance(me, nodes.Tasklet) and "callback_" in me.label:
-            exclude_tasklets_list.append(me.label)
+    #     if isinstance(me, nodes.Tasklet) and "callback_" in me.label:
+    #         exclude_tasklets_list.append(me.label)
 
-    result_sdfg.apply_transformations_repeated(
-        AddThreadBlockMap, print_report=False, validate=False
-    )
+    # result_sdfg.apply_transformations_repeated(
+    #     AddThreadBlockMap, print_report=False, validate=False
+    # )
 
     # Pool memory using the cuda-given pool
     with DaCeProgress(
@@ -322,9 +323,7 @@ def _prepare_sdfg(config: DaceConfig, sdfg: SDFG, device_type: DaceDeviceType):
     # Fully specialize all known symbols and then propagate these changes in the simplify
     # pass that follows. This is not only a smart idea in general, but also simplifies (haha)
     # the schedule tree (optimization) roundtrip.
-    with DaCeProgress(
-        config.get_orchestrate(), "Prepare SDFG: fully specialize symbols"
-    ):
+    with DaCeProgress(config.get_orchestrate(), "fully specialize symbols"):
         for my_sdfg in sdfg.all_sdfgs_recursive():
             if my_sdfg.parent_nsdfg_node is not None:
                 repl_dict: dict[str, str] = {}
@@ -342,7 +341,7 @@ def _prepare_sdfg(config: DaceConfig, sdfg: SDFG, device_type: DaceDeviceType):
 
     if config.is_gpu_backend():
         with DaCeProgress(
-            config.get_orchestrate(), "Prepare SDFG: configure maps to run on GPU"
+            config.get_orchestrate(), "configure maps to run on GPU"
         ):
             for this_sdfg in sdfg.all_sdfgs_recursive():
                 for state in this_sdfg.states():
@@ -354,7 +353,7 @@ def _prepare_sdfg(config: DaceConfig, sdfg: SDFG, device_type: DaceDeviceType):
                             node.schedule = ScheduleType.GPU_Device
 
     with DaCeProgress(
-        config.get_orchestrate(), "Prepare SDFG: make residency of memory leaner"
+        config.get_orchestrate(), "make residency of memory leaner"
     ):
         # - Scalar are registers
         # - Transient are persistent (cache miss but not runtime reallocation)
@@ -363,7 +362,7 @@ def _prepare_sdfg(config: DaceConfig, sdfg: SDFG, device_type: DaceDeviceType):
                 arr.storage = DaceStorageType.Register
         make_transients_persistent(sdfg=sdfg, device=device_type)
 
-    with DaCeProgress(config.get_orchestrate(), "Prepare SDFG: simplify"):
+    with DaCeProgress(config.get_orchestrate(), "simplify"):
         _simplify(sdfg)
 
 
@@ -434,26 +433,30 @@ def optimize_full_program_sdfg(
     ndsl_log.debug(f"Compiling config:\n{pformat(optimization_config, indent=2)}")
 
     # Clean up and prepare SDFG for optimization
-    _prepare_sdfg(config, parsed_sdfg, device_type)
+    with DaCeProgress(config.get_orchestrate(), "Prepare SDFG"):
+        _prepare_sdfg(config, parsed_sdfg, device_type)
 
     # Core optimization pipelines
     if optimization_config.serial_cpu_vectorization:
-        parsed_sdfg = _optimize_for_serial_cpu(
-            config,
-            parsed_sdfg,
-            device_type,
-            validate=False,
-        )
+        with DaCeProgress(config.get_orchestrate(), "Fixed pipeline for serial CPU"):
+            parsed_sdfg = _optimize_for_serial_cpu(
+                config,
+                parsed_sdfg,
+                device_type,
+                validate=False,
+            )
     elif config.is_gpu_backend():
-        parsed_sdfg = _optimize_for_gpu(
-            config,
-            parsed_sdfg,
-            device_type,
-            validate=False,
-        )
+        with DaCeProgress(config.get_orchestrate(), "Fixed pipeline for GPU"):
+            parsed_sdfg = _optimize_for_gpu(
+                config,
+                parsed_sdfg,
+                device_type,
+                validate=False,
+            )
 
     # Clean up and compile the SDFG (also additional feedback to the user)
-    compiled_sdfg = _compile(config, parsed_sdfg)
+    with DaCeProgress(config.get_orchestrate(), "Compile"):
+        compiled_sdfg = _compile(config, parsed_sdfg)
 
     # The full process of orchestration and compile is very memory hungry, since we are about to
     # begin runtime execution in earnest, let's give python a beat to clean up
