@@ -471,7 +471,7 @@ def optimize_full_program_sdfg(
                 parsed_sdfg,
                 device_type,
                 validate=False,
-                maximize_no_conditional_code=True,
+                maximize_no_conditional_code=False,
             )
 
     # Clean up and compile the SDFG (also additional feedback to the user)
